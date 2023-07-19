@@ -36,14 +36,13 @@ def sim_circuit():
     l = tc.tensor(0.5)
     c = tc.tensor(0.02)
     z = tc.tensor(0.0)
-    n1 = Node('v_in', [1, 0])
-    n2 = Node('res', [-(1/r), (1/r) + tc.complex(z, w * c)])
-    #n2 = Node('res', [-(1/r), (1/r) + tc.complex(z, w * c), - tc.complex(z, w * c)])
-    #n3 = Node('res', [0, -tc.complex(z, w * c), tc.complex(z, w * c) + (1 / tc.complex(z, w * l))])
+    n1 = Node('v_in', [1, 0, 0])
+    n2 = Node('res', [-(1/r), (1/r) + tc.complex(z, w * c), - tc.complex(z, w * c)])
+    n3 = Node('res', [0, -tc.complex(z, w * c), tc.complex(z, w * c) + (1 / tc.complex(z, w * l))])
     v_in = tc.complex(tc.tensor(1.5), tc.tensor(0.0))
-    z_c = tc.complex(tc.tensor(0.0), tc.tensor(0.0))
-    node_voltages = solve_circuit_complex(v_in, [n1, n2])
+    node_voltages = solve_circuit_complex(v_in, [n1, n2, n3])
     print(node_voltages)
+    print(f"Mag: {node_voltages[1].abs()}, phase: {node_voltages[1].angle()}")
 
 
 def solve_circuit_complex(v_in, nodes):
