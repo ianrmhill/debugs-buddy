@@ -34,9 +34,6 @@ def eval_eigs(prob_mdl, tests, obs_labels=None, circ_prm_labels=None, viz_result
         N=5000,           # number of samples to draw per step in the expectation
         M=5000)           # number of gradient steps
     accepted_eigs = eig.cpu()
-
-
-
     return accepted_eigs.detach()
 
 
@@ -53,24 +50,20 @@ def condition_fault_model(fault_mdl, inputs, measured, prms, edges, old_beliefs)
     n_ins = pyro.contrib.util.lexpand(inputs, int(1e6))
     trace = poutine.trace(cond_mdl).get_trace(n_ins)
     trace.compute_log_prob()
+    # Accumulate the log probability weights 'w' for each sample
     log_ws = None
     for node in measured:
         if log_ws is None:
             log_ws = trace.nodes[node]['log_prob']
         else:
             log_ws += trace.nodes[node]['log_prob']
+    # Normalize the weights so that the sum across all samples is 1
     log_w_norm = log_ws - tc.logsumexp(log_ws, 0)
     normed_w = tc.exp(log_w_norm)
 
     # Now sample from the set of sampled outputs based on the log probabilities, the resample values are trace indices
     resamples = tc.distributions.Categorical(normed_w).sample((int(1e6),))
     print(f"Number of samples used to construct updated beliefs: {len(tc.unique(resamples))}")
-    #for sample in tc.unique(resamples):
-    #    print(f"Sample {sample}:")
-    #    for edge in edges:
-    #        edge_name = str(sorted(tuple(edge)))
-    #        if trace.nodes[edge_name]['value'][sample] == 1.0:
-    #            print(f"    {edge_name}: {trace.nodes[edge_name]['value'][sample]}")
 
     # Now take the latent values from each trace in the resampled set and average to get the updated set of beliefs
     new_blfs = {}
@@ -108,7 +101,6 @@ def guided_debug(circuit=example_circuit, mode='simulated', vcc=False):
             if (test[0] <= test[1]) and ((test[1] - test[0]) <= 0.3):
                 reduced_tests.append(test)
         candidate_tests = tc.stack(reduced_tests)
-
 
     # Define the initial fault model and the graphical nodes that we will be conditioning and observing
     curr_mdl = circuit.gen_fault_mdl()

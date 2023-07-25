@@ -30,6 +30,31 @@ class CircuitNode:
             raise Exception(f"Invalid KCL equation construction mode: {mode}")
 
 
+class Node:
+    def __init__(self, name, coeffs):
+        self.name = name
+        self.coeffs = coeffs
+
+    def get_kcl_eqn(self):
+        coeffs = tc.zeros(len(self.coeffs), dtype=tc.cfloat)
+        for i, c in enumerate(self.coeffs):
+            coeffs[i] = c
+        return coeffs
+
+
+class Circuit:
+    def __init__(self):
+        self.name = None
+        self.node_order = None
+        self.nodes = None
+
+    def simulate(self, input_vals):
+        pass
+
+    def gen_fault_model(self):
+        pass
+
+
 class FaultyCircuit:
     def __init__(self, components, faulty_conns, intended_conns, prms, meas_nodes, restricted_mode=False):
         self.components = components

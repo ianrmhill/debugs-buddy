@@ -22,7 +22,8 @@
 import torch as tc
 
 pu = tc.device("cuda:0" if tc.cuda.is_available() else "cpu")
-
+shrt_res = tc.tensor(10, device=pu)
+open_res = tc.tensor(1e-6, device=pu)
 
 class Node:
     def __init__(self, type, conns):
@@ -45,25 +46,39 @@ def sim_circuit():
     print(f"Mag: {node_voltages[1].abs()}, phase: {node_voltages[1].angle()}")
 
 
-def solve_circuit_complex(v_in, nodes):
-    b = tc.zeros(len(nodes), dtype=tc.cfloat)
+def solve_circuit_complex(source_vals, frequency, nodes):
+    # The vector 'b' indicates whether any nodes in the circuit have fixed voltages (e.g. source nodes)
+    # The corresponding row in the matrix 'a' will be all zeros except 1 for the fixed voltage node coefficient
+    b = tc.zeros((*source_vals.shape[-1], len(nodes)), dtype=tc.cfloat)
     a_list = []
+    # The node order is fixed, and the source values must match the order in which the sources appear in the node order
+    s = 0
     for i, node in enumerate(nodes):
         if node.type == 'v_in':
-            b[i] = v_in
+            # Set the input values across all batch dimensions then increment the source counter
+            b[..., i] = source_vals[..., s]
+            s += 1
+            # Set the row coefficients to 0 except for 1 in the position corresponding to the node itself
             a_row = tc.zeros(len(nodes), dtype=tc.cfloat)
-            a_row[i] = 1
+            a_row[..., i] = 1
             a_list.append(a_row)
-        elif node.type == 'res':
-            a_row = tc.zeros(len(nodes), dtype=tc.cfloat)
+        else:
+            a_row = tc.zeros((*source_vals.shape[-1], len(nodes)), dtype=tc.cfloat)
+            # NOTE: All state information about the circuit should be provided as arguments and coeffs computed here
             for j, conn in enumerate(node.conns):
-                a_row[j] = conn
+                if conn.type == 'wire':
+                    a_row[..., j] -= tc.where(state == 1, shrt_res, open_res)
+                    a_row[..., i] += tc.where(state == 1, shrt_res, open_res)
+                elif conn.type == 'component':
+                    a_row[..., j] -= conn.coeff(frequency)
+                    a_row[..., i] += conn.coeff(frequency)
+                elif conn.type == 'self':
+                    continue
             a_list.append(a_row)
 
-    a = tc.stack(a_list)
-    print(a)
-    print(b)
+    a = tc.stack(a_list, -2)
     return tc.linalg.solve(a, b)
+
 
 if __name__ == '__main__':
     sim_circuit()
