@@ -5,12 +5,137 @@ import pyro
 import pyro.distributions as dist
 
 from .components import *
+from .circuit_solver import solve_circuit_complex
 
 __all__ = ['FaultyCircuit']
 
 MAX_RES = 1e6
 
 pu = tc.device("cuda:0" if tc.cuda.is_available() else "cpu")
+
+
+class Node:
+    def __init__(self, type: str, parent_component: str, parent_pin: str, hard_conns: list[str], name: str = None):
+        self.name = name
+        self.type = type
+        self.prnt_pin = parent_pin
+        self.prnt_comp = parent_component
+        self.hard_conns = hard_conns
+
+
+class Circuit:
+    def __init__(self, components: list | dict, intended_connections, outputs, name: str = None):
+        self.name = name
+        if type(components) == list:
+            self.comps = self.set_comp_names(components)
+        else:
+            self.comps = components
+        self.nodes = self.build_nodes(self.comps)
+        self.outputs = outputs
+        self.intended_conns = self.build_conn_matrix(intended_connections)
+
+    def node_index_from_pin(self, pin: Pin | Component):
+        p = pin if type(pin) == Pin else pin.p1
+        for i, node in enumerate(self.nodes):
+            if node.prnt_comp == p.prnt_comp and node.prnt_pin == p.name:
+                return i
+        raise Exception('Pin not found in circuit specification')
+
+
+    @staticmethod
+    def set_comp_names(components: list):
+        as_dict = {}
+        for comp in components:
+            # If the user explicitly gave the component a name use that
+            if comp.name is not None:
+                name = comp.name
+            else:
+                # Otherwise we count how many of this type of component have already been seen
+                tally = 0
+                for named in as_dict:
+                    if as_dict[named].type == comp.type:
+                        tally += 1
+                # Essentially this is just sequential annotation
+                name = comp.type + str(tally + 1)
+            if name in as_dict:
+                raise Exception('Duplicate component naming occurred when setting up circuit. Please fix.')
+            # Now set the determined name in the dict and update the component names
+            as_dict[name] = comp
+            as_dict[name].name = name
+            for pin in as_dict[name].list_pins():
+                pin.prnt_comp = name
+        return as_dict
+
+    @staticmethod
+    def build_nodes(components: dict):
+        ord_nodes = []
+        # First create a node for every pin on every component
+        for comp in components:
+            for pin in components[comp].list_pins():
+                ord_nodes.append(Node(pin.type, comp, pin.name, []))
+        # Now construct the hard connection matrix which indicates where parameters relate certain nodes
+        for i, n1 in enumerate(ord_nodes):
+            n1.hard_conns = ['' for _ in range(len(ord_nodes))]
+            n1.hard_conns[i] = 'self'
+            # Pins have special relationships to other pins on the same component
+            for j, n2 in enumerate(ord_nodes):
+                if n1 != n2 and n1.prnt_comp == n2.prnt_comp:
+                    n1.hard_conns[j] = components[n1.prnt_comp].get_relation(n1.type, n2.type)
+        return ord_nodes
+
+    def build_conn_matrix(self, conn_list: list[tuple]):
+        c = tc.zeros((len(self.nodes), len(self.nodes)))
+        for conn in conn_list:
+            i0 = self.node_index_from_pin(conn[0])
+            i1 = self.node_index_from_pin(conn[1])
+            c[i0, i1] = 1
+            c[i1, i0] = 1
+        return c
+
+    def simulate(self, input_vals):
+        pass
+
+    def get_obsrvd_lbls(self):
+        pass
+
+    def get_latent_lbls(self):
+        pass
+
+    def gen_fault_model(self, prior_beliefs: dict = None):
+        if not prior_beliefs:
+            prior_beliefs = self.gen_init_priors()
+
+        def fault_mdl(inputs):
+            with pyro.plate_stack('iso-plate', inputs.shape[:-1]):
+                # Sample all the parameters from prior belief distributions
+                conn_states = tc.zeros()
+                for i in range(len(self.nodes)):
+                    for j in range(i + 1, len(self.nodes)):
+                        conn_states[..., i, j] = pyro.sample(
+                            f"e-{i}-{j}", dist.Bernoulli(probs=prior_beliefs[f"e-{i}-{j}"]))
+                comp_prms = {}
+                for comp in self.comps:
+                    comp_prms[comp.name] = {}
+                    # TODO: Make work for components with more than one parameter, review whether tc.round needed
+                    comp_prms[comp.name][comp.type] = pyro.sample(
+                        f"{comp.name}-{comp.type}", dist.Normal(*prior_beliefs[comp.name][comp.type]))
+
+                # Solve the circuit for the sampled values
+                v_ins = inputs[..., :-1]
+                freqs = inputs[..., -1]
+                node_voltages = solve_circuit_complex(v_ins, freqs, self.nodes, conn_states, comp_prms)
+
+                # Assemble the observed voltages for return
+                output_list = []
+                for obs in self.outputs:
+                    i = self.node_index_from_pin(obs)
+                    output_list.append(pyro.sample(
+                        # TODO: decide on random variance addition logic and make naming work for single-node components
+                        f"{obs.prnt_comp}-{obs.name}", dist.Normal(node_voltages[..., i], tc.tensor(0.02, device=pu))))
+                outputs = tc.stack(output_list, -1)
+                return outputs
+
+        return fault_mdl
 
 
 class CircuitNode:
@@ -28,31 +153,6 @@ class CircuitNode:
             return get_pred_eqn(self.name, self.parent_comp, self.type, self.nodes, edge_states, comp_prms, batch_shape)
         else:
             raise Exception(f"Invalid KCL equation construction mode: {mode}")
-
-
-class Node:
-    def __init__(self, name, coeffs):
-        self.name = name
-        self.coeffs = coeffs
-
-    def get_kcl_eqn(self):
-        coeffs = tc.zeros(len(self.coeffs), dtype=tc.cfloat)
-        for i, c in enumerate(self.coeffs):
-            coeffs[i] = c
-        return coeffs
-
-
-class Circuit:
-    def __init__(self):
-        self.name = None
-        self.node_order = None
-        self.nodes = None
-
-    def simulate(self, input_vals):
-        pass
-
-    def gen_fault_model(self):
-        pass
 
 
 class FaultyCircuit:

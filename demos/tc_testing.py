@@ -1,7 +1,9 @@
 import torch as tc
 
-batch_dims = (4)
+batch_dims = (4, 5, 3)
 inputs = tc.rand(batch_dims, dtype=tc.float)
+print(inputs[..., :-1])
+print(inputs[..., -2:-1])
 
 a = tc.zeros((*inputs.shape[:-1], 4), dtype=tc.float)
 b = tc.ones((*inputs.shape[:-1], 4), dtype=tc.float)

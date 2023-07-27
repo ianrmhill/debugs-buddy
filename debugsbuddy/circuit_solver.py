@@ -22,63 +22,64 @@
 import torch as tc
 
 pu = tc.device("cuda:0" if tc.cuda.is_available() else "cpu")
-shrt_res = tc.tensor(10, device=pu)
+zero = tc.tensor(0.0, device=pu)
+near_zero = tc.tensor(0.00001, device=pu)
+shrt_res = tc.tensor(1e4, device=pu)
 open_res = tc.tensor(1e-6, device=pu)
-
-class Node:
-    def __init__(self, type, conns):
-        self.type = type
-        self.conns = conns
-
-def sim_circuit():
-    # Define an RLC series circuit
-    w = tc.tensor(100.0)
-    r = tc.tensor(10.0)
-    l = tc.tensor(0.5)
-    c = tc.tensor(0.02)
-    z = tc.tensor(0.0)
-    n1 = Node('v_in', [1, 0, 0])
-    n2 = Node('res', [-(1/r), (1/r) + tc.complex(z, w * c), - tc.complex(z, w * c)])
-    n3 = Node('res', [0, -tc.complex(z, w * c), tc.complex(z, w * c) + (1 / tc.complex(z, w * l))])
-    v_in = tc.complex(tc.tensor(1.5), tc.tensor(0.0))
-    node_voltages = solve_circuit_complex(v_in, [n1, n2, n3])
-    print(node_voltages)
-    print(f"Mag: {node_voltages[1].abs()}, phase: {node_voltages[1].angle()}")
+op_amp_gain = tc.tensor(1e5, device=pu)
 
 
-def solve_circuit_complex(source_vals, frequency, nodes):
+def calc_coeff(type, prm, frequency=near_zero):
+    match type:
+        case 'r' | 'op-i' | 'op-o-o':
+            return 1 / prm
+        case 'l':
+            return 1 / tc.complex(zero, frequency * prm)
+        case 'c':
+            return tc.complex(zero, frequency * prm)
+        case 'op-o-p':
+            return -(op_amp_gain / prm)
+        case 'op-o-m':
+            return op_amp_gain / prm
+        case _:
+            raise Exception('Invalid component connection type')
+
+
+def solve_circuit_complex(source_vals, frequency, nodes, edge_states, prms):
     # The vector 'b' indicates whether any nodes in the circuit have fixed voltages (e.g. source nodes)
     # The corresponding row in the matrix 'a' will be all zeros except 1 for the fixed voltage node coefficient
-    b = tc.zeros((*source_vals.shape[-1], len(nodes)), dtype=tc.cfloat)
+    batch_dims = source_vals.shape[-1]
+    row_dims = (batch_dims, len(nodes)) if type(batch_dims) == int else (*batch_dims, len(nodes))
+    b = tc.zeros(row_dims, dtype=tc.cfloat, device=pu)
     a_list = []
-    # The node order is fixed, and the source values must match the order in which the sources appear in the node order
+    # Node order is fixed, and the source value order must match the order in which the sources appear in the node order
     s = 0
     for i, node in enumerate(nodes):
+        a_row = tc.zeros(len(nodes), dtype=tc.cfloat, device=pu)
         if node.type == 'v_in':
             # Set the input values across all batch dimensions then increment the source counter
             b[..., i] = source_vals[..., s]
             s += 1
             # Set the row coefficients to 0 except for 1 in the position corresponding to the node itself
-            a_row = tc.zeros(len(nodes), dtype=tc.cfloat)
+            a_row[..., i] = 1
+            a_list.append(a_row)
+        elif node.type == 'gnd':
+            b[..., i] = tc.zeros(batch_dims, device=pu)
             a_row[..., i] = 1
             a_list.append(a_row)
         else:
-            a_row = tc.zeros((*source_vals.shape[-1], len(nodes)), dtype=tc.cfloat)
             # NOTE: All state information about the circuit should be provided as arguments and coeffs computed here
             for j, conn in enumerate(node.conns):
-                if conn.type == 'wire':
-                    a_row[..., j] -= tc.where(state == 1, shrt_res, open_res)
-                    a_row[..., i] += tc.where(state == 1, shrt_res, open_res)
-                elif conn.type == 'component':
-                    a_row[..., j] -= conn.coeff(frequency)
-                    a_row[..., i] += conn.coeff(frequency)
-                elif conn.type == 'self':
-                    continue
+                # For all nodes except the node itself (matrix diagonal), add the resistance for the connection state
+                if i != j:
+                    a_row[..., j] -= tc.where(edge_states[..., i, j] == 1, shrt_res, open_res)
+                    a_row[..., i] += tc.where(edge_states[..., i, j] == 1, shrt_res, open_res)
+                    if conn != '':
+                        # Must compute two coefficients as they will be different for an op amp output node
+                        a_row[..., j] -= calc_coeff(conn, prms[node.prnt_comp][conn[:4]], frequency)
+                        a_row[..., i] += calc_coeff(conn, prms[node.prnt_comp][conn[:4]], frequency)
             a_list.append(a_row)
 
+    # Create the matrix a by stacking all the rows of coefficients from the KCL equations then solve
     a = tc.stack(a_list, -2)
-    return tc.linalg.solve(a, b)
-
-
-if __name__ == '__main__':
-    sim_circuit()
+    return tc.linalg.solve(a, tc.transpose(b, -2, -1))
