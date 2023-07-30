@@ -24,11 +24,11 @@ import torch as tc
 pu = tc.device("cuda:0" if tc.cuda.is_available() else "cpu")
 zero = tc.tensor(0.0, device=pu)
 near_zero = tc.tensor(0.00001, device=pu)
-shrt_res = tc.tensor(1e4, device=pu)
-open_res = tc.tensor(1e-6, device=pu)
+shrt_res = tc.tensor(1e2, device=pu)
+open_res = tc.tensor(1e-3, device=pu)
 op_amp_gain = tc.tensor(1e5, device=pu)
 
-
+# TODO: Consider moving this logic into the components
 def calc_coeff(type, prm, frequency=near_zero):
     match type:
         case 'r' | 'op-i' | 'op-o-o':
@@ -48,15 +48,15 @@ def calc_coeff(type, prm, frequency=near_zero):
 def solve_circuit_complex(source_vals, frequency, nodes, edge_states, prms):
     # The vector 'b' indicates whether any nodes in the circuit have fixed voltages (e.g. source nodes)
     # The corresponding row in the matrix 'a' will be all zeros except 1 for the fixed voltage node coefficient
-    batch_dims = source_vals.shape[-1]
+    batch_dims = source_vals.shape[:-1]
     row_dims = (batch_dims, len(nodes)) if type(batch_dims) == int else (*batch_dims, len(nodes))
     b = tc.zeros(row_dims, dtype=tc.cfloat, device=pu)
     a_list = []
     # Node order is fixed, and the source value order must match the order in which the sources appear in the node order
     s = 0
     for i, node in enumerate(nodes):
-        a_row = tc.zeros(len(nodes), dtype=tc.cfloat, device=pu)
-        if node.type == 'v_in':
+        a_row = tc.zeros(row_dims, dtype=tc.cfloat, device=pu)
+        if node.type == 'vin':
             # Set the input values across all batch dimensions then increment the source counter
             b[..., i] = source_vals[..., s]
             s += 1
@@ -69,7 +69,7 @@ def solve_circuit_complex(source_vals, frequency, nodes, edge_states, prms):
             a_list.append(a_row)
         else:
             # NOTE: All state information about the circuit should be provided as arguments and coeffs computed here
-            for j, conn in enumerate(node.conns):
+            for j, conn in enumerate(node.hard_conns):
                 # For all nodes except the node itself (matrix diagonal), add the resistance for the connection state
                 if i != j:
                     a_row[..., j] -= tc.where(edge_states[..., i, j] == 1, shrt_res, open_res)
@@ -82,4 +82,6 @@ def solve_circuit_complex(source_vals, frequency, nodes, edge_states, prms):
 
     # Create the matrix a by stacking all the rows of coefficients from the KCL equations then solve
     a = tc.stack(a_list, -2)
-    return tc.linalg.solve(a, tc.transpose(b, -2, -1))
+    #b = tc.transpose(b, -2, -1)
+    v = tc.linalg.solve(a, b)
+    return v

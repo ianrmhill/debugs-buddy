@@ -84,7 +84,7 @@ class Circuit:
         return ord_nodes
 
     def build_conn_matrix(self, conn_list: list[tuple]):
-        c = tc.zeros((len(self.nodes), len(self.nodes)))
+        c = tc.zeros((len(self.nodes), len(self.nodes)), device=pu)
         for conn in conn_list:
             i0 = self.node_index_from_pin(conn[0])
             i1 = self.node_index_from_pin(conn[1])
@@ -96,29 +96,58 @@ class Circuit:
         pass
 
     def get_obsrvd_lbls(self):
-        pass
+        obsrvd_list = []
+        for obs in self.outputs:
+            obsrvd_list.append(f"{obs.prnt_comp}-{obs.name}-ampli")
+            obsrvd_list.append(f"{obs.prnt_comp}-{obs.name}-phase")
+        return obsrvd_list
 
     def get_latent_lbls(self):
-        pass
+        ltnt_list = []
+        for i in range(len(self.nodes)):
+            for j in range(i+1, len(self.nodes)):
+                ltnt_list.append(f"e-{i}-{j}")
+        for comp in self.comps.values():
+            if comp.type in ['r', 'l', 'c']:
+                ltnt_list.append(f"{comp.name}-{comp.type}")
+        return ltnt_list
 
-    def gen_fault_model(self, prior_beliefs: dict = None):
+    def gen_init_priors(self):
+        priors = {}
+        for i in range(len(self.nodes)):
+            for j in range(i+1, len(self.nodes)):
+                if self.intended_conns[i][j] == 1:
+                    priors[f"e-{i}-{j}"] = tc.tensor(0.9, device=pu)
+                else:
+                    priors[f"e-{i}-{j}"] = tc.tensor(0.05, device=pu)
+        for comp in self.comps.values():
+            if comp.type in ['r', 'l', 'c']:
+                priors[comp.name] = {f"{comp.type}": tc.tensor([comp.prm, comp.prm * 0.05], device=pu)}
+        return priors
+
+    def gen_fault_mdl(self, prior_beliefs: dict = None):
         if not prior_beliefs:
             prior_beliefs = self.gen_init_priors()
 
         def fault_mdl(inputs):
             with pyro.plate_stack('iso-plate', inputs.shape[:-1]):
                 # Sample all the parameters from prior belief distributions
-                conn_states = tc.zeros()
+                batch_dims = inputs.shape[:-1]
+                row_dims = (batch_dims, len(self.nodes), len(self.nodes))\
+                    if type(batch_dims) == int else (*batch_dims, len(self.nodes), len(self.nodes))
+                conn_states = tc.zeros(row_dims, device=pu)
                 for i in range(len(self.nodes)):
                     for j in range(i + 1, len(self.nodes)):
-                        conn_states[..., i, j] = pyro.sample(
-                            f"e-{i}-{j}", dist.Bernoulli(probs=prior_beliefs[f"e-{i}-{j}"]))
+                        edge_state = pyro.sample(f"e-{i}-{j}", dist.Bernoulli(probs=prior_beliefs[f"e-{i}-{j}"]))
+                        conn_states[..., i, j] = edge_state
+                        conn_states[..., j, i] = edge_state
                 comp_prms = {}
-                for comp in self.comps:
-                    comp_prms[comp.name] = {}
-                    # TODO: Make work for components with more than one parameter, review whether tc.round needed
-                    comp_prms[comp.name][comp.type] = pyro.sample(
-                        f"{comp.name}-{comp.type}", dist.Normal(*prior_beliefs[comp.name][comp.type]))
+                for comp in self.comps.values():
+                    if comp.type in ['r', 'l', 'c']:
+                        comp_prms[comp.name] = {}
+                        # TODO: Make work for components with more than one parameter, review whether tc.round needed
+                        comp_prms[comp.name][comp.type] = pyro.sample(
+                            f"{comp.name}-{comp.type}", dist.Normal(*prior_beliefs[comp.name][comp.type]))
 
                 # Solve the circuit for the sampled values
                 v_ins = inputs[..., :-1]
@@ -131,11 +160,17 @@ class Circuit:
                     i = self.node_index_from_pin(obs)
                     output_list.append(pyro.sample(
                         # TODO: decide on random variance addition logic and make naming work for single-node components
-                        f"{obs.prnt_comp}-{obs.name}", dist.Normal(node_voltages[..., i], tc.tensor(0.02, device=pu))))
+                        f"{obs.prnt_comp}-{obs.name}-ampli",
+                        dist.Normal(node_voltages[..., i].abs(), tc.tensor(0.01, device=pu))))
+                    output_list.append(pyro.sample(
+                        f"{obs.prnt_comp}-{obs.name}-phase",
+                        dist.Normal(node_voltages[..., i].angle(), tc.tensor(0.01, device=pu))))
                 outputs = tc.stack(output_list, -1)
                 return outputs
 
         return fault_mdl
+
+
 
 
 class CircuitNode:

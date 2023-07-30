@@ -14,10 +14,11 @@ def run_demo():
     v1 = VoltSource(0, 1)
     gnd = Ground()
     intended_conns = [(v1, r1.p1), (r1.p2, l1.p1), (l1.p2, c1.p1), (c1.p2, gnd)]
-    outputs = [l1.p1, c1.p1]
+    outputs = [c1.p1]
     rlc_circ = Circuit([r1, l1, c1, v1, gnd], intended_conns, outputs)
 
-    bugbud.guided_debug(rlc_circ, analysis='ac', mode='live')
+    #bugbud.guided_debug(rlc_circ, analysis='ac', mode='live')
+    bugbud.guided_debug(rlc_circ, mode='live')
 
 
 if __name__ == '__main__':

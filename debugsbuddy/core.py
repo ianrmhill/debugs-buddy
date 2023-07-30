@@ -1,6 +1,6 @@
 """Entry point for the BOED-based analog circuit debug tool."""
 
-from itertools import product
+import itertools
 
 import time
 import multiprocessing as mp
@@ -31,8 +31,8 @@ def eval_eigs(prob_mdl, tests, obs_labels=None, circ_prm_labels=None, viz_result
         tests,           # design, or in this case, tensor of possible designs
         obs_labels,      # site label of observations, could be a list
         circ_prm_labels, # site label of 'targets' (latent variables), could also be list
-        N=5000,           # number of samples to draw per step in the expectation
-        M=5000)           # number of gradient steps
+        N=8000,           # number of samples to draw per step in the expectation
+        M=8000)           # number of gradient steps
     accepted_eigs = eig.cpu()
     return accepted_eigs.detach()
 
@@ -80,7 +80,7 @@ def condition_fault_model(fault_mdl, inputs, measured, prms, edges, old_beliefs)
     return new_blfs
 
 
-def guided_debug(circuit=example_circuit, mode='simulated', vcc=False):
+def guided_debug(circuit=example_circuit, mode='simulated'):
     # Setup of general objects needed for the guided debug process
     print(f"Starting guided debug using Debugs Buddy...")
 
@@ -88,23 +88,37 @@ def guided_debug(circuit=example_circuit, mode='simulated', vcc=False):
     tc.backends.cuda.matmul.allow_tf32 = True
 
     # Construct possible test voltages to apply
-    v_list = tc.linspace(0, 1, 11, device=pu)
-    # With two test voltages we consider every 100mV steps and every possible combination of the two sources
-    candidate_tests = tc.tensor(list(product(v_list, repeat=2)), dtype=tc.float, device=pu)
-    gnds = tc.zeros(121, device=pu).unsqueeze(-1)
-    vccs = tc.ones(121, device=pu).unsqueeze(-1)
-    candidate_tests = tc.cat((candidate_tests, gnds), -1)
-    if vcc:
-        candidate_tests = tc.cat((candidate_tests, vccs), -1)
-        reduced_tests = []
-        for test in candidate_tests:
-            if (test[0] <= test[1]) and ((test[1] - test[0]) <= 0.3):
-                reduced_tests.append(test)
-        candidate_tests = tc.stack(reduced_tests)
+    #v_list = tc.linspace(0, 1, 11, device=pu)
+    ## With two test voltages we consider every 100mV steps and every possible combination of the two sources
+    #candidate_tests = tc.tensor(list(product(v_list, repeat=2)), dtype=tc.float, device=pu)
+    #gnds = tc.zeros(121, device=pu).unsqueeze(-1)
+    #vccs = tc.ones(121, device=pu).unsqueeze(-1)
+    #candidate_tests = tc.cat((candidate_tests, gnds), -1)
+    #if vcc:
+    #    candidate_tests = tc.cat((candidate_tests, vccs), -1)
+    #    reduced_tests = []
+    #    for test in candidate_tests:
+    #        if (test[0] <= test[1]) and ((test[1] - test[0]) <= 0.3):
+    #            reduced_tests.append(test)
+    #    candidate_tests = tc.stack(reduced_tests)
+
+    # Construct test voltages
+    volts = {}
+    for comp in circuit.comps.values():
+        # For each input voltage, we consider possible amplitudes in increments of 100mV within the voltage source range
+        if comp.type == 'vin':
+            num_steps = int((comp.range[1] - comp.range[0]) / 0.1) + 1
+            volts[comp.name] = tc.linspace(comp.range[0], comp.range[1], num_steps, dtype=tc.float, device=pu)
+    # Construct frequencies
+    # For now we just consider 1Hz (10^0) to 1MHz (10^6) in log steps
+    freqs = tc.logspace(0, 6, 13, dtype=tc.float, device=pu)
+    # Put the voltages and frequencies together into the complete BOED input matrix
+    candidate_tests = tc.tensor(list(itertools.product(*volts.values(), freqs)), dtype=tc.float, device=pu)
+    #candidate_tests = tc.stack(candidate_inputs)
 
     # Define the initial fault model and the graphical nodes that we will be conditioning and observing
     curr_mdl = circuit.gen_fault_mdl()
-    obs_lbls = circuit.to_meas
+    obs_lbls = circuit.get_obsrvd_lbls()
     ltnt_lbls = circuit.get_latent_lbls()
 
     # With the circuit to debug defined, we can begin recommending measurements to determine implementation faults
@@ -113,7 +127,8 @@ def guided_debug(circuit=example_circuit, mode='simulated', vcc=False):
         # First we determine what test inputs to apply to the circuit next
         print(f"Determining next best test to conduct...")
         eigs = None
-        candidate_tests = tc.split(candidate_tests, 6)
+        # We use batching to reduce the problem size so that each subproblem can fit on the GPU
+        candidate_tests = tc.split(candidate_tests, 4)
         for batch in candidate_tests:
             if eigs is None:
                 eigs = eval_eigs(curr_mdl, batch, obs_lbls, ltnt_lbls)
@@ -126,7 +141,7 @@ def guided_debug(circuit=example_circuit, mode='simulated', vcc=False):
         viz_results = True
         if viz_results:
             plt.figure(figsize=(20, 7))
-            x_vals = [f"{round(float(test[0]), 1)}, {round(float(test[1]), 1)}" for test in candidate_tests]
+            x_vals = [f"{round(float(test[0]), 1)}, {int(test[1])}" for test in candidate_tests]
             plt.plot(x_vals, eigs.numpy(), marker='o', linewidth=2)
             plt.xlabel("Possible inputs")
             plt.xticks(rotation=90, fontsize='x-small')
