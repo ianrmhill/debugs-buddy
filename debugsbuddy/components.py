@@ -1,9 +1,103 @@
 
 import torch as tc
 
-__all__ = ['get_comp_nodes', 'get_eqn', 'get_pred_eqn']
+__all__ = ['Pin', 'Component', 'Resistor', 'Inductor', 'Capacitor', 'VoltSource', 'Ground', 'get_comp_nodes', 'get_eqn', 'get_pred_eqn']
 
 pu = tc.device("cuda:0" if tc.cuda.is_available() else "cpu")
+
+
+class Pin:
+    def __init__(self, name: str, type: str, parent_component: str):
+        self.name = name
+        self.type = type
+        self.prnt_comp = parent_component
+
+
+class Component:
+    pass
+
+
+class Resistor(Component):
+    def __init__(self, r, name: str = None):
+        self.type = 'r'
+        self.prm = r
+        self.name = name
+        self.p1 = Pin('p1', 'r', name)
+        self.p2 = Pin('p2', 'r', name)
+
+    def list_pins(self):
+        return [self.p1, self.p2]
+
+    def get_relation(self, p1, p2):
+        if p1 == 'r' and p2 == 'r':
+            return 'r'
+        else:
+            raise Exception('Invalid component pin pair')
+
+
+class Inductor(Component):
+    def __init__(self, l, name: str = None):
+        self.type = 'l'
+        self.prm = l
+        self.name = name
+        self.p1 = Pin('p1', 'l', name)
+        self.p2 = Pin('p2', 'l', name)
+
+    def list_pins(self):
+        return [self.p1, self.p2]
+
+    def get_relation(self, p1, p2):
+        if p1 == 'l' and p2 == 'l':
+            return 'l'
+        else:
+            raise Exception('Invalid component pin pair')
+
+
+class Capacitor(Component):
+    def __init__(self, c, name: str = None):
+        self.type = 'c'
+        self.prm = c
+        self.name = name
+        self.p1 = Pin('p1', 'c', name)
+        self.p2 = Pin('p2', 'c', name)
+
+    def list_pins(self):
+        return [self.p1, self.p2]
+
+    def get_relation(self, p1, p2):
+        if p1 == 'c' and p2 == 'c':
+            return 'c'
+        else:
+            raise Exception('Invalid component pin pair')
+
+
+class VoltSource(Component):
+    def __init__(self, min: float = None, max: float = None, name: str = None):
+        self.type = 'vin'
+        self.range = (min, max)
+        self.name = name
+        self.p1 = Pin('p1', 'vin', name)
+
+    def list_pins(self):
+        return [self.p1]
+
+    def get_relation(self, p1, p2):
+        raise Exception('No pin relations for component with only one pin')
+
+
+class Ground(Component):
+    def __init__(self, name: str = None):
+        self.type = 'gnd'
+        self.name = name
+        self.p1 = Pin('p1', 'gnd', name)
+
+    def list_pins(self):
+        return [self.p1]
+
+    def get_relation(self, p1, p2):
+        raise Exception('No pin relations for component with only one pin')
+
+
 
 
 def get_comp_nodes(comp_name, comp_type):
@@ -119,4 +213,3 @@ def get_pred_eqn(node_name, comp_name, comp_type, nodes, edge_states, prms, batc
                             eqn[..., i] += -(prms[0] / prms[2])
 
     return eqn
-
