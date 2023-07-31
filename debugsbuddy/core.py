@@ -31,13 +31,13 @@ def eval_eigs(prob_mdl, tests, obs_labels=None, circ_prm_labels=None, viz_result
         tests,           # design, or in this case, tensor of possible designs
         obs_labels,      # site label of observations, could be a list
         circ_prm_labels, # site label of 'targets' (latent variables), could also be list
-        N=8000,           # number of samples to draw per step in the expectation
-        M=8000)           # number of gradient steps
+        N=6000,           # number of samples to draw per step in the expectation
+        M=6000)           # number of gradient steps
     accepted_eigs = eig.cpu()
     return accepted_eigs.detach()
 
 
-def condition_fault_model(fault_mdl, inputs, measured, prms, edges, old_beliefs):
+def condition_fault_model(fault_mdl, inputs, measured, latent_lbls):
     """
     Numerically estimate the posterior probabilities of the various candidate faults within a circuit using Bayes'
     rule conditioned on the observed circuit measurements.
@@ -66,17 +66,28 @@ def condition_fault_model(fault_mdl, inputs, measured, prms, edges, old_beliefs)
     print(f"Number of samples used to construct updated beliefs: {len(tc.unique(resamples))}")
 
     # Now take the latent values from each trace in the resampled set and average to get the updated set of beliefs
+    #new_blfs = {}
+    #for prm in prms:
+    #    sampled = tc.tensor([trace.nodes[prm]['value'][s] for s in resamples])
+    #    mu, std = norm.fit(sampled)
+    #    new_blfs[prm] = tc.tensor([mu, std], device=pu)
+    #for edge in edges:
+    #    edge_name = str(sorted(tuple(edge)))
+    #    vals = trace.nodes[edge_name]['value']
+    #    sampled = tc.take(vals, resamples)
+    #    new_blfs[edge_name] = tc.count_nonzero(sampled == 1, ) / sampled.size(0)
+
     new_blfs = {}
-    for prm in prms:
-        #sampled = tc.tensor([trace.nodes[prm]['value'][s] for s in resamples])
-        #mu, std = norm.fit(sampled)
-        #new_blfs[prm] = tc.tensor([mu, std], device=pu)
-        new_blfs[prm] = old_beliefs[prm]
-    for edge in edges:
-        edge_name = str(sorted(tuple(edge)))
-        vals = trace.nodes[edge_name]['value']
+    for ltnt in latent_lbls:
+        # Handle edges first
+        vals = trace.nodes[ltnt]['value']
         sampled = tc.take(vals, resamples)
-        new_blfs[edge_name] = tc.count_nonzero(sampled == 1, ) / sampled.size(0)
+        if ltnt[0] == 'e':
+            new_blfs[ltnt] = tc.count_nonzero(sampled == 1) / sampled.size(0)
+        else:
+            comp, prm = ltnt.split('-')
+            mu, std = norm.fit(sampled)
+            new_blfs[comp] = {prm: tc.tensor([mu, std], device=pu)}
     return new_blfs
 
 
@@ -87,21 +98,6 @@ def guided_debug(circuit=example_circuit, mode='simulated'):
     # Setup compute device
     tc.backends.cuda.matmul.allow_tf32 = True
 
-    # Construct possible test voltages to apply
-    #v_list = tc.linspace(0, 1, 11, device=pu)
-    ## With two test voltages we consider every 100mV steps and every possible combination of the two sources
-    #candidate_tests = tc.tensor(list(product(v_list, repeat=2)), dtype=tc.float, device=pu)
-    #gnds = tc.zeros(121, device=pu).unsqueeze(-1)
-    #vccs = tc.ones(121, device=pu).unsqueeze(-1)
-    #candidate_tests = tc.cat((candidate_tests, gnds), -1)
-    #if vcc:
-    #    candidate_tests = tc.cat((candidate_tests, vccs), -1)
-    #    reduced_tests = []
-    #    for test in candidate_tests:
-    #        if (test[0] <= test[1]) and ((test[1] - test[0]) <= 0.3):
-    #            reduced_tests.append(test)
-    #    candidate_tests = tc.stack(reduced_tests)
-
     # Construct test voltages
     volts = {}
     for comp in circuit.comps.values():
@@ -111,7 +107,7 @@ def guided_debug(circuit=example_circuit, mode='simulated'):
             volts[comp.name] = tc.linspace(comp.range[0], comp.range[1], num_steps, dtype=tc.float, device=pu)
     # Construct frequencies
     # For now we just consider 1Hz (10^0) to 1MHz (10^6) in log steps
-    freqs = tc.logspace(0, 6, 13, dtype=tc.float, device=pu)
+    freqs = tc.logspace(0, 6, 7, dtype=tc.float, device=pu)
     # Put the voltages and frequencies together into the complete BOED input matrix
     candidate_tests = tc.tensor(list(itertools.product(*volts.values(), freqs)), dtype=tc.float, device=pu)
     #candidate_tests = tc.stack(candidate_inputs)
@@ -151,7 +147,7 @@ def guided_debug(circuit=example_circuit, mode='simulated'):
         # Apply the selected test inputs to the circuit and collect measurements
         if mode == 'simulated':
             print(f"Next best test: {candidate_tests[best_test]}.")
-            measured = circuit.simulate_test(candidate_tests[best_test]).to(pu)
+            measured = circuit.simulate_actual(candidate_tests[best_test]).to(pu)
             print(f"Measured from test: {measured}.")
         else:
             # If in real-world guided debug mode the user must collect the measurements manually
@@ -160,39 +156,41 @@ def guided_debug(circuit=example_circuit, mode='simulated'):
             measured = input('Input measurements as floats separated by spaces...')
             measured = [tc.tensor(float(val), device=pu) for val in measured.split(' ')]
 
-        obs_set = {}
-        j = 0
-        for i, node in enumerate(circuit.nodes):
-            if node.name in obs_lbls:
-                obs_set[node.name] = measured[j]
-                j += 1
-
         # Now we condition the fault model on the measured data
+        #obs_set = {}
+        #j = 0
+        #for i, node in enumerate(circuit.nodes):
+        #    if node.name in obs_lbls:
+        #        obs_set[node.name] = measured[j]
+        #        j += 1
+        obs_set = {}
+        for i, obs in enumerate(obs_lbls):
+            obs_set[obs] = measured[i]
         print(f"Updating probable faults based on measurement data...")
-        new_beliefs = condition_fault_model(curr_mdl, candidate_tests[best_test], obs_set,
-                                            circuit.comp_prms, circuit.edges, circuit.priors)
+        new_beliefs = condition_fault_model(curr_mdl, candidate_tests[best_test], obs_set, ltnt_lbls)
         curr_mdl = circuit.gen_fault_mdl(new_beliefs)
 
         # Now print the probable circuit model for the user to view
         print('Correct:')
-        print(circuit.correct)
+        print(circuit.intended_conns)
+        print(circuit.comps.values())
         print('Beliefs updated:')
         print(new_beliefs)
 
         # Try to analyze the output to identify faulty construction
-        correct_count, total_edges = 0, 0
-        for prior in circuit.priors:
-            if new_beliefs[prior].dim() == 0:
-                total_edges += 1
-                diff = tc.abs(new_beliefs[prior] - circuit.correct[prior])
-                if diff > 0.3:
-                    print(f"Looks like edge {prior} is either shorted or unconnected erroneously!\n"
-                          f"Belief: {new_beliefs[prior]}, correct: {circuit.correct[prior]}")
-                elif diff < 0.1:
-                    correct_count += 1
-        print(f"Currently {correct_count} edges out of {total_edges} are anticipated to be correct.")
-        if total_edges == correct_count:
-            print(f"Seems like your circuit is constructed correctly!")
+        #correct_count, total_edges = 0, 0
+        #for prior in circuit.priors:
+        #    if new_beliefs[prior].dim() == 0:
+        #        total_edges += 1
+        #        diff = tc.abs(new_beliefs[prior] - circuit.correct[prior])
+        #        if diff > 0.3:
+        #            print(f"Looks like edge {prior} is either shorted or unconnected erroneously!\n"
+        #                  f"Belief: {new_beliefs[prior]}, correct: {circuit.correct[prior]}")
+        #        elif diff < 0.1:
+        #            correct_count += 1
+        #print(f"Currently {correct_count} edges out of {total_edges} are anticipated to be correct.")
+        #if total_edges == correct_count:
+        #    print(f"Seems like your circuit is constructed correctly!")
 
         input('Press Enter to run another cycle...')
 

@@ -17,8 +17,14 @@ def run_demo():
     outputs = [c1.p1]
     rlc_circ = Circuit([r1, l1, c1, v1, gnd], intended_conns, outputs)
 
-    #bugbud.guided_debug(rlc_circ, analysis='ac', mode='live')
-    bugbud.guided_debug(rlc_circ, mode='live')
+    # Set the faulty circuit parameters
+    faulty_conns = [(v1, r1.p1), (r1.p2, l1.p1), (l1.p2, gnd), (r1.p2, c1.p1), (c1.p2, gnd)]
+    faulty_prms = {'r1': {'r': 10},
+                  'l1': {'l': 0.5},
+                  'c1': {'c': 0.02}}
+    rlc_circ.set_actual_circuit(faulty_conns, faulty_prms)
+
+    bugbud.guided_debug(rlc_circ, mode='simulated')
 
 
 if __name__ == '__main__':

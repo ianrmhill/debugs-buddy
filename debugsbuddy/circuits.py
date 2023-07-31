@@ -33,6 +33,16 @@ class Circuit:
         self.nodes = self.build_nodes(self.comps)
         self.outputs = outputs
         self.intended_conns = self.build_conn_matrix(intended_connections)
+        self.actual_conns = None
+        self.actual_prms = None
+
+    def set_actual_circuit(self, actual_connections, actual_parameters):
+        self.actual_conns = self.build_conn_matrix(actual_connections)
+        self.actual_prms = {}
+        for comp in self.comps.values():
+            if comp.type in ['r', 'l', 'c']:
+                self.actual_prms[comp.name] =\
+                    {f"{comp.type}": tc.tensor(actual_parameters[comp.name][comp.type], device=pu)}
 
     def node_index_from_pin(self, pin: Pin | Component):
         p = pin if type(pin) == Pin else pin.p1
@@ -92,8 +102,17 @@ class Circuit:
             c[i1, i0] = 1
         return c
 
-    def simulate(self, input_vals):
-        pass
+    def simulate_actual(self, input_vals):
+        v = solve_circuit_complex(input_vals[..., :-1], input_vals[..., -1], self.nodes,
+                                  self.actual_conns, self.actual_prms)
+        # Assemble the observed voltages for return
+        output_list = []
+        for obs in self.outputs:
+            i = self.node_index_from_pin(obs)
+            output_list.append(v[..., i].abs())
+            output_list.append(v[..., i].angle())
+        outputs = tc.stack(output_list, -1)
+        return outputs
 
     def get_obsrvd_lbls(self):
         obsrvd_list = []
