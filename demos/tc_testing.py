@@ -1,5 +1,13 @@
 import torch as tc
 
+a = tc.rand((2, 2, 9, 9))
+b = a[..., 1, :]
+d = tc.rand((2, 2))
+e = d.unsqueeze(-1)
+c = tc.where(e < 0.5, tc.tensor(0.0), b)
+print(c.shape)
+
+
 batch_dims = (4, 5, 3)
 inputs = tc.rand(batch_dims, dtype=tc.float)
 print(inputs[..., :-1])

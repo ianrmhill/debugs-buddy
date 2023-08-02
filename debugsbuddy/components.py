@@ -1,16 +1,16 @@
-
 import torch as tc
 
-__all__ = ['Pin', 'Component', 'Resistor', 'Inductor', 'Capacitor', 'VoltSource', 'Ground', 'get_comp_nodes', 'get_eqn', 'get_pred_eqn']
+__all__ = ['Pin', 'Component', 'Resistor', 'Inductor', 'Capacitor', 'OpAmp', 'VoltSource', 'Ground']
 
 pu = tc.device("cuda:0" if tc.cuda.is_available() else "cpu")
+zero = tc.tensor(0.0, device=pu)
 
 
 class Pin:
-    def __init__(self, name: str, type: str, parent_component: str):
+    def __init__(self, name: str, parent_component: str, v_lims: list[float] = None):
         self.name = name
-        self.type = type
         self.prnt_comp = parent_component
+        self.lims = v_lims
 
 
 class Component:
@@ -20,55 +20,52 @@ class Component:
 class Resistor(Component):
     def __init__(self, r, name: str = None):
         self.type = 'r'
-        self.prm = r
+        self.prms = {'r': r}
         self.name = name
-        self.p1 = Pin('p1', 'r', name)
-        self.p2 = Pin('p2', 'r', name)
+        self.p1 = Pin('p1', name)
+        self.p2 = Pin('p2', name)
 
     def list_pins(self):
         return [self.p1, self.p2]
 
-    def get_relation(self, p1, p2):
-        if p1 == 'r' and p2 == 'r':
-            return 'r'
-        else:
-            raise Exception('Invalid component pin pair')
+    @staticmethod
+    def get_coeff(node, p1, p2, prms, freq):
+        return 1 / prms['r']
 
 
 class Inductor(Component):
     def __init__(self, l, name: str = None):
         self.type = 'l'
-        self.prm = l
+        self.prms = {'l': l}
         self.name = name
-        self.p1 = Pin('p1', 'l', name)
-        self.p2 = Pin('p2', 'l', name)
+        self.p1 = Pin('p1', name)
+        self.p2 = Pin('p2', name)
 
     def list_pins(self):
         return [self.p1, self.p2]
 
-    def get_relation(self, p1, p2):
-        if p1 == 'l' and p2 == 'l':
-            return 'l'
+    @staticmethod
+    def get_coeff(node, p1, p2, prms, freq):
+        if freq == 0.0:
+            return tc.tensor(1e4, device=pu)
         else:
-            raise Exception('Invalid component pin pair')
+            return 1 / tc.complex(zero, freq * prms['l'])
 
 
 class Capacitor(Component):
     def __init__(self, c, name: str = None):
         self.type = 'c'
-        self.prm = c
+        self.prms = {'c': c}
         self.name = name
-        self.p1 = Pin('p1', 'c', name)
-        self.p2 = Pin('p2', 'c', name)
+        self.p1 = Pin('p1', name)
+        self.p2 = Pin('p2', name)
 
     def list_pins(self):
         return [self.p1, self.p2]
 
-    def get_relation(self, p1, p2):
-        if p1 == 'c' and p2 == 'c':
-            return 'c'
-        else:
-            raise Exception('Invalid component pin pair')
+    @staticmethod
+    def get_coeff(node, p1, p2, prms, freq):
+        return tc.complex(zero, freq * prms['c'])
 
 
 class VoltSource(Component):
@@ -76,12 +73,13 @@ class VoltSource(Component):
         self.type = 'vin'
         self.range = (min, max)
         self.name = name
-        self.p1 = Pin('p1', 'vin', name)
+        self.p1 = Pin('vin', name)
 
     def list_pins(self):
         return [self.p1]
 
-    def get_relation(self, p1, p2):
+    @staticmethod
+    def get_coeff(node, p1, p2, prms, freq):
         raise Exception('No pin relations for component with only one pin')
 
 
@@ -89,127 +87,44 @@ class Ground(Component):
     def __init__(self, name: str = None):
         self.type = 'gnd'
         self.name = name
-        self.p1 = Pin('p1', 'gnd', name)
+        self.p1 = Pin('gnd', name)
 
     def list_pins(self):
         return [self.p1]
 
-    def get_relation(self, p1, p2):
+    @staticmethod
+    def get_coeff(node, p1, p2, prms, freq):
         raise Exception('No pin relations for component with only one pin')
 
 
+class OpAmp(Component):
+    def __init__(self, rin, rout, gain, rails: list[float] = None, name: str = None):
+        self.type = 'op'
+        self.prms = {'rin': rin, 'rout': rout, 'gain': gain}
+        self.lims = rails
+        self.name = name
+        self.ip = Pin('ip', name)
+        self.im = Pin('im', name)
+        self.o = Pin('o', name, rails)
 
+    def list_pins(self):
+        return [self.ip, self.im, self.o]
 
-def get_comp_nodes(comp_name, comp_type):
-    match comp_type:
-        case 'v_in': return [comp_name]
-        case 'v_out': return [comp_name]
-        case 'res': return [f"{comp_name}.1", f"{comp_name}.2"]
-        case 'opamp3': return [f"{comp_name}.-", f"{comp_name}.+", f"{comp_name}.o"]
-        case 'opamp5': return [f"{comp_name}.-", f"{comp_name}.+", f"{comp_name}.o",
-                              f"{comp_name}.vcc", f"{comp_name}.vee"]
-        case _: raise Exception(f"Unknown component type {comp_type}!")
-
-
-def get_eqn(node_name, comp_name, comp_type, nodes, conns, prms):
-    eqn = tc.zeros(len(nodes), dtype=tc.float)
-    self_coeff = 0
-    for i in range(len(nodes)):
-        connected = False
-        for conn in conns:
-            if nodes[i] in conn and node_name in conn:
-                connected = True
-        if nodes[i] != node_name:
-            eqn[i] += -10 if connected else -1e-6
-            self_coeff += 10 if connected else 1e-6
-    # Now add the sum of the short connections to the self node coefficient
-    for i in range(len(nodes)):
-        if nodes[i] == node_name:
-            eqn[i] += self_coeff
-
-    # Now handle special behaviour for terminals connected to components
-    match comp_type:
-        # Resistor voltage nodes have a special relation to the node on the other side of the resistor
-        case 'res':
-            # Add the influence from the connection to the other side of the resistor
-            for i in range(len(nodes)):
-                if comp_name in nodes[i]:
-                    if nodes[i] == node_name:
-                        eqn[i] += (1 / prms)
-                    else:
-                        eqn[i] += -(1 / prms)
-
-        case 'opamp3' | 'opamp5':
-            if '.-' in node_name or '.+' in node_name:
-                # Add the resistive connection to the other input terminal
-                for i in range(len(nodes)):
-                    if comp_name in nodes[i] and ('.-' in nodes[i] or '.+' in nodes[i]):
-                        if nodes[i] == node_name:
-                            eqn[i] += (1 / prms[1])
-                        else:
-                            eqn[i] += -(1 / prms[1])
-            elif '.o' in node_name:
-                # Add the op amp gain influence
-                for i in range(len(nodes)):
-                    if comp_name in nodes[i]:
-                        if nodes[i] == node_name:
-                            eqn[i] += (1 / prms[2])
-                        elif '.-' in nodes[i]:
-                            eqn[i] += (prms[0] / prms[2])
-                        elif '.+' in nodes[i]:
-                            eqn[i] += -(prms[0] / prms[2])
-
-    return eqn
-
-
-def get_pred_eqn(node_name, comp_name, comp_type, nodes, edge_states, prms, batch_shape):
-    eqn = tc.zeros((*batch_shape, len(nodes)), dtype=tc.float, device=pu)
-    self_coeff = tc.zeros(batch_shape, dtype=tc.float, device=pu)
-    for i, node in enumerate(nodes):
-        # Don't yet handle coefficients for the node itself
-        if node != node_name:
-            edge_name = str(sorted(tuple({node, node_name})))
-            state = edge_states[edge_name]
-            eqn[..., i] += tc.where(state == 1, tc.tensor(-10, device=pu), tc.tensor(-1e-6, device=pu))
-            # eqn[..., i] += tc.where(state == 1, tc.tensor(-10, device=pu), tc.tensor(0, device=pu))
-            self_coeff += tc.where(state == 1, tc.tensor(10, device=pu), tc.tensor(1e-6, device=pu))
-            # self_coeff += tc.where(state == 1, tc.tensor(10, device=pu), tc.tensor(0, device=pu))
-    # Now set the node itself to be the sum of the connection weights/coeffs
-    for i in range(len(nodes)):
-        if nodes[i] == node_name:
-            eqn[..., i] += self_coeff
-
-    # Now handle special behaviour for terminals connected to components
-    match comp_type:
-        # Resistor voltage nodes have a special relation to the node on the other side of the resistor
-        case 'res':
-            # Now add the connection to the other side of the resistor, which is potentially two resistors in parallel
-            for i in range(len(nodes)):
-                # Identify the node that represents the other resistor terminal
-                if comp_name in nodes[i]:
-                    if nodes[i] == node_name:
-                        eqn[..., i] += (1 / prms)
-                    else:
-                        eqn[..., i] += -(1 / prms)
-
-        case 'opamp3' | 'opamp5':
-            if '.-' in node_name or '.+' in node_name:
-                # Add the resistive connection to the other input terminal
-                for i in range(len(nodes)):
-                    if comp_name in nodes[i]:
-                        if nodes[i] == node_name:
-                            eqn[..., i] += (1 / prms[1])
-                        elif '.-' in nodes[i] or '.+' in nodes[i]:
-                            eqn[..., i] += -(1 / prms[1])
-            elif '.o' in node_name:
-                # Add the op amp gain influence
-                for i in range(len(nodes)):
-                    if comp_name in nodes[i]:
-                        if nodes[i] == node_name:
-                            eqn[..., i] += (1 / prms[2])
-                        elif '.-' in nodes[i]:
-                            eqn[..., i] += (prms[0] / prms[2])
-                        elif '.+' in nodes[i]:
-                            eqn[..., i] += -(prms[0] / prms[2])
-
-    return eqn
+    @staticmethod
+    def get_coeff(node, p1, p2, prms, freq):
+        # The opamp coefficients depend on which node equation we're constructing, and the order of the pin pair
+        if node in ['ip', 'im']:
+            if p1 in ['ip', 'im'] and p2 in ['ip', 'im']:
+                return 1 / prms['rin']
+            else:
+                return zero
+        elif node == 'o':
+            if p1 == 'o' and p2 in ['ip', 'im']:
+                # This coefficient is half the correct value as it will be added twice, once for each input
+                return 1 / (2 * prms['rout'])
+            elif p1 == 'ip' and p2 == 'o':
+                return prms['gain'] / prms['rout']
+            elif p1 == 'im' and p2 == 'o':
+                return -(prms['gain'] / prms['rout'])
+        # If we didn't return yet, that means in invalid set of arguments was provided
+        raise Exception('Invalid opamp pin pair relationship requested')
