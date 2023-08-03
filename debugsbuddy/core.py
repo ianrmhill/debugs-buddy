@@ -66,17 +66,6 @@ def condition_fault_model(fault_mdl, inputs, measured, latent_lbls):
     print(f"Number of samples used to construct updated beliefs: {len(tc.unique(resamples))}")
 
     # Now take the latent values from each trace in the resampled set and average to get the updated set of beliefs
-    #new_blfs = {}
-    #for prm in prms:
-    #    sampled = tc.tensor([trace.nodes[prm]['value'][s] for s in resamples])
-    #    mu, std = norm.fit(sampled)
-    #    new_blfs[prm] = tc.tensor([mu, std], device=pu)
-    #for edge in edges:
-    #    edge_name = str(sorted(tuple(edge)))
-    #    vals = trace.nodes[edge_name]['value']
-    #    sampled = tc.take(vals, resamples)
-    #    new_blfs[edge_name] = tc.count_nonzero(sampled == 1, ) / sampled.size(0)
-
     new_blfs = {}
     for ltnt in latent_lbls:
         # Handle edges first
@@ -85,18 +74,90 @@ def condition_fault_model(fault_mdl, inputs, measured, latent_lbls):
         if ltnt[0] == 'e':
             new_blfs[ltnt] = tc.count_nonzero(sampled == 1) / sampled.size(0)
         else:
+            mu, std = norm.fit(sampled.cpu().numpy())
             comp, prm = ltnt.split('-')
-            mu, std = norm.fit(sampled)
             new_blfs[comp] = {prm: tc.tensor([mu, std], device=pu)}
     return new_blfs
 
 
-def guided_debug(circuit=example_circuit, mode='simulated'):
+def analyze_beliefs(init: dict, old: dict, new: dict):
+    worst_edges = [{'ltnt': 'none', 'diff': 0},{'ltnt': 'none', 'diff': 0},{'ltnt': 'none', 'diff': 0}]
+    worst_param = {'ltnt': 'none', 'stddevs': 0}
+    worst_uncertainty = ''
+    likely_correct = True
+    bad_state = lambda x: 'unconnected' if x > 0.5 else 'shorted'
+
+    for ltnt in new:
+        # Latent variables that are beliefs about whether a node connection is short vs. open
+        if ltnt[0] == 'e':
+            # We take the difference opposite ways for connections that are intended to be short vs. open
+            # This way a positive difference always indicates that the connection is now more likely to be correct
+            if init[ltnt] < 0.5:
+                d = init[ltnt] - new[ltnt]
+            else:
+                d = new[ltnt] - init[ltnt]
+            # The circuit is only anticipated to be correct if all edges have tended towards the correct states
+            if d < 0:
+                likely_correct = False
+                # Determine if the change in belief is bad enough to place it correctly in the worst three edges
+                if d < worst_edges[2]['diff']:
+                    if d < worst_edges[1]['diff']:
+                        if d < worst_edges[0]['diff']:
+                            worst_edges[0] = {'ltnt': ltnt, 'diff': d, 'problem': bad_state(init[ltnt])}
+                        else:
+                            worst_edges[1] = {'ltnt': ltnt, 'diff': d, 'problem': bad_state(init[ltnt])}
+                    else:
+                        worst_edges[2] = {'ltnt': ltnt, 'diff': d, 'problem': bad_state(init[ltnt])}
+        else:
+            # For component parameters we determine the difference in both normal distribution parameters
+            for prm in new[ltnt]:
+                # Variance should decrease as we gain more information
+                d_stddev = init[ltnt][prm][1] - new[ltnt][prm][1]
+                # Indicate an issue if the correct mean is more than a current deviation outside the current mean
+                sigmas_to_mean = -(abs(new[ltnt][prm][0] - init[ltnt][prm][0]) / new[ltnt][prm][1]) + 1
+                if sigmas_to_mean < 0:
+                    likely_correct = False
+                    # Variance in parameters should decrease from initial, if increased something strange is occurring
+                    if d_stddev < 0:
+                        worst_uncertainty = f"{ltnt}-{prm}"
+                    # Track which parameter is least likely to be the correct value
+                    if sigmas_to_mean < worst_param['stddevs']:
+                        p = 'too low' if new[ltnt][prm][0] < init[ltnt][prm][0] else 'too high'
+                        worst_param = {'ltnt': f"{ltnt}-{prm}", 'stddevs': d_stddev, 'problem': p}
+
+    # Construct the list of potential circuit construction problems to report to the user
+    problems = []
+    if not likely_correct:
+        # TODO: Seems like the standard deviations aren't changing much after inference?
+        if worst_uncertainty != '':
+            print(f"Less certain about the value of {worst_uncertainty} than at the start of debugging, unusual...")
+        # Don't want to overload the user by suggesting four possible problems; try to reduce to the most likely problem
+        if worst_edges[0]['diff'] < 0:
+            # If the worst edge is more than twice as bad as the next worst don't even bother reporting the other ones,
+            # and similarly if the 2nd worst is more than twice as bad as the 3rd
+            if (2 * worst_edges[2]['diff']) <= worst_edges[1]['diff']:
+                if (2 * worst_edges[1]['diff']) <= worst_edges[0]['diff']:
+                    problems.append(worst_edges[2])
+                problems.append(worst_edges[1])
+            problems.append(worst_edges[0])
+        # Add the worst parameter if it exists since there's no way to effectively compare the 'badness' to the edges
+        if worst_param['stddevs'] < 0:
+            problems.append(worst_param)
+    return problems
+
+
+def guided_debug(circuit=example_circuit, mode='simulated',
+                 shrt_admittance=tc.tensor(1e2, device=pu), open_admittance=tc.tensor(1e-3, device=pu)):
     # Setup of general objects needed for the guided debug process
     print(f"Starting guided debug using Debugs Buddy...")
 
     # Setup compute device
     tc.backends.cuda.matmul.allow_tf32 = True
+    # Define the initial fault model and the graphical nodes that we will be conditioning and observing
+    curr_mdl = circuit.gen_fault_mdl(shrt_res=shrt_admittance, open_res=open_admittance)
+    obs_lbls = circuit.get_obsrvd_lbls()
+    ltnt_lbls = circuit.get_latent_lbls()
+    init_beliefs = circuit.curr_beliefs
 
     # Construct test voltages
     volts = {}
@@ -107,17 +168,11 @@ def guided_debug(circuit=example_circuit, mode='simulated'):
             volts[comp.name] = tc.linspace(comp.range[0], comp.range[1], num_steps, dtype=tc.float, device=pu)
     # Construct frequencies
     # For now we just consider 1Hz (10^0) to 1MHz (10^6) in log steps
-    freqs = tc.logspace(0, 6, 7, dtype=tc.float, device=pu)
+    freqs = tc.logspace(0, 6, 13, dtype=tc.float, device=pu)
     # Put the voltages and frequencies together into the complete BOED input matrix
     candidate_tests = tc.tensor(list(itertools.product(*volts.values(), freqs)), dtype=tc.float, device=pu)
-    #candidate_tests = tc.stack(candidate_inputs)
 
-    # Define the initial fault model and the graphical nodes that we will be conditioning and observing
-    curr_mdl = circuit.gen_fault_mdl()
-    obs_lbls = circuit.get_obsrvd_lbls()
-    ltnt_lbls = circuit.get_latent_lbls()
-
-    # With the circuit to debug defined, we can begin recommending measurements to determine implementation faults
+    # With the circuit and experiments defined, begin recommending measurements to determine implementation faults
     pyro.clear_param_store()
     while True:
         # First we determine what test inputs to apply to the circuit next
@@ -134,7 +189,7 @@ def guided_debug(circuit=example_circuit, mode='simulated'):
         best_test = int(tc.argmax(eigs).detach())
         candidate_tests = tc.concat(candidate_tests)
 
-        viz_results = True
+        viz_results = False
         if viz_results:
             plt.figure(figsize=(20, 7))
             x_vals = [f"{round(float(test[0]), 1)}, {int(test[1])}" for test in candidate_tests]
@@ -157,41 +212,38 @@ def guided_debug(circuit=example_circuit, mode='simulated'):
             measured = [tc.tensor(float(val), device=pu) for val in measured.split(' ')]
 
         # Now we condition the fault model on the measured data
-        #obs_set = {}
-        #j = 0
-        #for i, node in enumerate(circuit.nodes):
-        #    if node.name in obs_lbls:
-        #        obs_set[node.name] = measured[j]
-        #        j += 1
         obs_set = {}
         for i, obs in enumerate(obs_lbls):
             obs_set[obs] = measured[i]
         print(f"Updating probable faults based on measurement data...")
         new_beliefs = condition_fault_model(curr_mdl, candidate_tests[best_test], obs_set, ltnt_lbls)
-        curr_mdl = circuit.gen_fault_mdl(new_beliefs)
+
+        # Analyze the new beliefs to try and determine whether there's a fault and what it is likely to be
+        problems = analyze_beliefs(init_beliefs, circuit.curr_beliefs, new_beliefs)
+        # The circuit is likely to be correct if all beliefs became more certain
+        if len(problems) == 0:
+            print("Measurements indicate that the circuit is likely to be correctly assembled!")
+        else:
+            print("Problems likely exist, try checking the following:")
+            for p in problems:
+                if p['ltnt'][0] == 'e':
+                    # If the problem is an edge, let the user know which two nodes it links
+                    n1, n2 = p['ltnt'][2:].split('-')
+                    n1 = circuit.nodal_name_from_index(int(n1))
+                    n2 = circuit.nodal_name_from_index(int(n2))
+                    print(f"   -Looks like nodes {n1} and {n2} might be {p['problem']}")
+                else:
+                    print(f"   -Looks like component parameter {p['ltnt']} might be {p['problem']}")
 
         # Now print the probable circuit model for the user to view
-        print('Correct:')
-        print(circuit.intended_conns)
-        print(circuit.comps.values())
-        print('Beliefs updated:')
-        print(new_beliefs)
+        #print('Correct:')
+        #print(circuit.intended_conns)
+        #print(circuit.comps.values())
+        #print('Beliefs updated:')
+        #print(new_beliefs)
 
-        # Try to analyze the output to identify faulty construction
-        #correct_count, total_edges = 0, 0
-        #for prior in circuit.priors:
-        #    if new_beliefs[prior].dim() == 0:
-        #        total_edges += 1
-        #        diff = tc.abs(new_beliefs[prior] - circuit.correct[prior])
-        #        if diff > 0.3:
-        #            print(f"Looks like edge {prior} is either shorted or unconnected erroneously!\n"
-        #                  f"Belief: {new_beliefs[prior]}, correct: {circuit.correct[prior]}")
-        #        elif diff < 0.1:
-        #            correct_count += 1
-        #print(f"Currently {correct_count} edges out of {total_edges} are anticipated to be correct.")
-        #if total_edges == correct_count:
-        #    print(f"Seems like your circuit is constructed correctly!")
-
+        # Update the fault model to reflect the new beliefs and run another iteration
+        curr_mdl = circuit.gen_fault_mdl(new_beliefs)
         input('Press Enter to run another cycle...')
 
 

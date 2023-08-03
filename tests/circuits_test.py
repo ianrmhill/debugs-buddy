@@ -3,14 +3,13 @@ from debugsbuddy.components import *
 
 
 def test_node():
-    n = Node('n', 'prnt', 'p1', ['', 'self', 'n', ''])
-    assert n.name is None
-    assert n.type == 'n'
+    n = Node('n', 'prnt', lambda x: x + 1)
+    assert n.name is 'n'
+    assert n.lims is None
     assert n.prnt_comp == 'prnt'
-    assert n.prnt_pin == 'p1'
-    assert n.hard_conns == ['', 'self', 'n', '']
-    n = Node('', '', '', [], 'setname')
-    assert n.name == 'setname'
+    assert n.calc_coeff(2) == 3
+    n.lims = [2, 5]
+    assert n.lims[1] == 5
 
 
 def test_circuit():
@@ -19,5 +18,3 @@ def test_circuit():
     r3 = Resistor(89, 'r4')
     test_circ = Circuit([r1, r2, r3], [(r1.p1, r2.p2)], [r2.p1])
     assert test_circ.name is None
-
-    c1 = Capacitor(0.004)

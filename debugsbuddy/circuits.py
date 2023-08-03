@@ -52,6 +52,11 @@ class Circuit:
                 return i
         raise Exception('Pin not found in circuit specification')
 
+    def nodal_name_from_index(self, index: int):
+        for i, node in enumerate(self.nodes):
+            if i == index:
+                return f"{node.prnt_comp}-{node.name}"
+
     @staticmethod
     def set_comp_names(components: list):
         as_dict = {}
@@ -139,12 +144,15 @@ class Circuit:
                 priors[comp.name] = {}
                 for prm in comp.prms.keys():
                     # TODO: Figure out a better initial distribution for component parameter values
-                    priors[comp.name][prm] = tc.tensor([comp.prms[prm], comp.prms[prm] * 0.05], device=pu)
+                    priors[comp.name][prm] = tc.tensor([comp.prms[prm], comp.prms[prm] * 0.2], device=pu)
         return priors
 
-    def gen_fault_mdl(self, prior_beliefs: dict = None):
+    def gen_fault_mdl(self, prior_beliefs: dict = None,
+                      shrt_res=tc.tensor(1e3, device=pu), open_res=tc.tensor(1e-3, device=pu)):
         if not prior_beliefs:
             prior_beliefs = self.gen_init_priors()
+        # Save the current set of beliefs so we can compare them to sets after inference
+        self.curr_beliefs = prior_beliefs
 
         def fault_mdl(inputs):
             with pyro.plate_stack('iso-plate', inputs.shape[:-1]):
@@ -171,7 +179,8 @@ class Circuit:
                 # Solve the circuit for the sampled values
                 v_ins = inputs[..., :-1]
                 freqs = inputs[..., -1]
-                node_voltages = solve_circuit_complex(v_ins, freqs, self.nodes, conn_states, comp_prms)
+                node_voltages = solve_circuit_complex(v_ins, freqs, self.nodes, conn_states, comp_prms,
+                                                      shrt_res, open_res)
 
                 # Assemble the observed voltages for return
                 output_list = []

@@ -46,10 +46,7 @@ class Inductor(Component):
 
     @staticmethod
     def get_coeff(node, p1, p2, prms, freq):
-        if freq == 0.0:
-            return tc.tensor(1e4, device=pu)
-        else:
-            return 1 / tc.complex(zero, freq * prms['l'])
+        return tc.where(freq == 0.0, tc.tensor(1e4, device=pu), 1 / tc.complex(zero, freq * prms['l']))
 
 
 class Capacitor(Component):

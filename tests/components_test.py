@@ -5,25 +5,44 @@ from debugsbuddy.components import *
 
 
 def test_get_coeff():
-    # Test all supported component types
-    types = ['r', 'l', 'c', 'op-i', 'op-o-o', 'op-o-p', 'op-o-m']
-    prm = tc.tensor(4.0)
-    freq = tc.tensor(5.0)
-    zero = tc.tensor(0.0)
-    expected = [tc.tensor(0.25), tc.complex(zero, tc.tensor(-0.05)),
-                tc.complex(zero, tc.tensor(20.0)), tc.tensor(0.25),
-                tc.tensor(0.25), tc.tensor(-25000), tc.tensor(25000)]
-    for i, type in enumerate(types):
-        coeff = calc_coeff(type, prm, freq)
-        assert tc.eq(expected[i], coeff)
-    # Test default frequency args
-    assert tc.eq(tc.complex(zero, tc.tensor(-25000.0)), calc_coeff('l', prm))
-    # Test batched calculation
-    prm = tc.tensor([[1, 2, 3], [5, 6, 7]], dtype=tc.float)
-    freq = tc.tensor([[3, 4, 3], [1, 2, 1]], dtype=tc.float)
-    expected = tc.tensor([[tc.complex(zero, tc.tensor(3.0)), tc.complex(zero, tc.tensor(8.0)), tc.complex(zero, tc.tensor(9.0))],
-                          [tc.complex(zero, tc.tensor(5.0)), tc.complex(zero, tc.tensor(12.0)), tc.complex(zero, tc.tensor(7.0))]])
-    assert tc.allclose(expected, calc_coeff('c', prm, freq))
-    # Test invalid coeff type handling
+    # Ground node test
+    g = Ground()
+    assert g.name is None
+    assert g.p1.prnt_comp is None
+    g = Ground('agnd')
+    assert g.name == 'agnd'
+    assert g.type == 'gnd'
+    assert g.p1.name == 'gnd'
+    assert g.p1.prnt_comp == 'agnd'
+    assert g.list_pins()[0].name == 'gnd'
     with pytest.raises(Exception):
-        calc_coeff('invalid', prm, freq)
+        g.get_coeff('', '', '', 2, 3)
+
+    # Voltage source node test
+    v = VoltSource()
+    assert v.name is None
+    assert v.range[1] is None
+    assert v.p1.prnt_comp is None
+    v = VoltSource(-1, 0.8, 'v1')
+    assert v.name == 'v1'
+    assert v.type == 'vin'
+    assert v.range[1] is 0.8
+    assert v.p1.name == 'vin'
+    assert v.p1.prnt_comp == 'v1'
+    assert v.list_pins()[0].name == 'vin'
+    with pytest.raises(Exception):
+        v.get_coeff('', '', '', 2, 3)
+
+    # Resistor test
+    r = Resistor(8)
+    assert r.type == 'r'
+    assert r.prms['r'] == 8
+    assert r.name is None
+    assert r.p1.name is 'p1'
+    assert r.p2.prnt_comp is None
+    assert r.p2.lims is None
+    r = Resistor(5, 'r1')
+    assert r.name == 'r1'
+    assert r.p1.prnt_comp == 'r1'
+    assert r.list_pins()[1].name == 'p2'
+    assert r.get_coeff('p1', 'p1', 'p2', r.prms, 2) == 0.2
