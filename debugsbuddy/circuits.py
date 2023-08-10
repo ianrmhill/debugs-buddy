@@ -131,26 +131,26 @@ class Circuit:
                     ltnt_list.append(f"{comp.name}-{prm}")
         return ltnt_list
 
-    def gen_init_priors(self):
+    def gen_init_priors(self, open_fault_prob, shrt_fault_prob, comp_prm_spread):
         priors = {}
         for i in range(len(self.nodes)):
             for j in range(i+1, len(self.nodes)):
                 if self.intended_conns[i][j] == 1:
-                    priors[f"e-{i}-{j}"] = tc.tensor(0.9, device=pu)
+                    priors[f"e-{i}-{j}"] = tc.tensor(1.0 - open_fault_prob, device=pu)
                 else:
-                    priors[f"e-{i}-{j}"] = tc.tensor(0.05, device=pu)
+                    priors[f"e-{i}-{j}"] = tc.tensor(shrt_fault_prob, device=pu)
         for comp in self.comps.values():
             if 'prms' in dir(comp):
                 priors[comp.name] = {}
                 for prm in comp.prms.keys():
-                    # TODO: Figure out a better initial distribution for component parameter values
-                    priors[comp.name][prm] = tc.tensor([comp.prms[prm], comp.prms[prm] * 0.2], device=pu)
+                    priors[comp.name][prm] = tc.tensor([comp.prms[prm], comp.prms[prm] * comp_prm_spread], device=pu)
         return priors
 
     def gen_fault_mdl(self, prior_beliefs: dict = None,
-                      shrt_res=tc.tensor(1e3, device=pu), open_res=tc.tensor(1e-3, device=pu)):
+                      shrt_res=tc.tensor(1e3, device=pu), open_res=tc.tensor(1e-3, device=pu),
+                      open_fault_prob=0.1, shrt_fault_prob=0.05, comp_prm_spread=0.2, meas_error=0.002):
         if not prior_beliefs:
-            prior_beliefs = self.gen_init_priors()
+            prior_beliefs = self.gen_init_priors(open_fault_prob, shrt_fault_prob, comp_prm_spread)
         # Save the current set of beliefs so we can compare them to sets after inference
         self.curr_beliefs = prior_beliefs
 
@@ -189,10 +189,10 @@ class Circuit:
                     # TODO: decide on random variance addition logic
                     output_list.append(pyro.sample(
                         f"{obs.prnt_comp}-{obs.name}-ampli",
-                        dist.Normal(node_voltages[..., i].abs(), tc.tensor(0.01, device=pu))))
+                        dist.Normal(node_voltages[..., i].abs(), tc.tensor(meas_error, device=pu))))
                     output_list.append(pyro.sample(
                         f"{obs.prnt_comp}-{obs.name}-phase",
-                        dist.Normal(node_voltages[..., i].angle(), tc.tensor(0.01, device=pu))))
+                        dist.Normal(node_voltages[..., i].angle(), tc.tensor(meas_error, device=pu))))
                 outputs = tc.stack(output_list, -1)
                 return outputs
 

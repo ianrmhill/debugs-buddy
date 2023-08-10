@@ -1,7 +1,7 @@
 from debugsbuddy.circuits import Node, Circuit
 from debugsbuddy.components import *
 
-
+# TODO: Write these tests properly
 def test_node():
     n = Node('n', 'prnt', lambda x: x + 1)
     assert n.name is 'n'
