@@ -1,4 +1,15 @@
-from debugsbuddy.circuits import Node, Circuit, Resistor
+from debugsbuddy.circuits import Node, Circuit
+from debugsbuddy.components import *
+
+# TODO: Write these tests properly
+def test_node():
+    n = Node('n', 'prnt', lambda x: x + 1)
+    assert n.name is 'n'
+    assert n.lims is None
+    assert n.prnt_comp == 'prnt'
+    assert n.calc_coeff(2) == 3
+    n.lims = [2, 5]
+    assert n.lims[1] == 5
 
 
 def test_circuit():
