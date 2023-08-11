@@ -112,7 +112,7 @@ class OpAmp(Component):
         # The opamp coefficients depend on which node equation we're constructing, and the order of the pin pair
         if node in ['ip', 'im']:
             if p1 in ['ip', 'im'] and p2 in ['ip', 'im']:
-                return 1 / prms['rin']
+                return 1 / (100 * prms['rin'])
             else:
                 return zero
         elif node == 'o':
@@ -120,8 +120,8 @@ class OpAmp(Component):
                 # This coefficient is half the correct value as it will be added twice, once for each input
                 return 1 / (2 * prms['rout'])
             elif p1 == 'ip' and p2 == 'o':
-                return prms['gain'] / prms['rout']
+                return (100 * prms['gain']) / prms['rout']
             elif p1 == 'im' and p2 == 'o':
-                return -(prms['gain'] / prms['rout'])
+                return -((100 * prms['gain']) / prms['rout'])
         # If we didn't return yet, that means in invalid set of arguments was provided
         raise Exception('Invalid opamp pin pair relationship requested')

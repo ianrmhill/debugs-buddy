@@ -206,7 +206,7 @@ def guided_debug(circuit, mode='simulated', **prm_overrides):
         print(f"Determining next best test to conduct...")
         eigs = None
         # We use batching to reduce the problem size so that each subproblem can fit on the GPU
-        candidate_tests = tc.split(candidate_tests, 4)
+        candidate_tests = tc.split(candidate_tests, 3)
         for batch in candidate_tests:
             if eigs is None:
                 eigs = eval_eigs(curr_mdl, batch, obs_lbls, ltnt_lbls, eig_samples)
@@ -270,4 +270,5 @@ def guided_debug(circuit, mode='simulated', **prm_overrides):
         curr_mdl = circuit.gen_fault_mdl(new_beliefs, shrt_res=shrt, open_res=open,
                                          shrt_fault_prob=shrt_prob, open_fault_prob=open_prob,
                                          comp_prm_spread=prm_spread, meas_error=meas_error)
+        print(new_beliefs)
         input('Press Enter to run another cycle...')
