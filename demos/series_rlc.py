@@ -18,7 +18,7 @@ def run_demo():
     rlc_circ = Circuit([r1, l1, c1, v1, gnd], intended_conns, outputs)
 
     # Set the faulty circuit parameters
-    faulty_conns = [(v1, r1.p1), (r1.p2, l1.p1), (l1.p2, c1.p1), (c1.p2, gnd), (c1.p1, gnd)]
+    faulty_conns = [(v1, r1.p1), (r1.p2, l1.p1), (l1.p2, c1.p1), (c1.p2, gnd)]#, (l1.p1, c1.p1)]
     faulty_prms = {'r1': {'r': 10},
                    'l1': {'l': 0.5},
                    'c1': {'c': 0.02}}

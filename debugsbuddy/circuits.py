@@ -33,6 +33,7 @@ class Circuit:
         self.nodes = self.build_nodes(self.comps)
         self.outputs = outputs
         self.intended_conns = self.build_conn_matrix(intended_connections)
+        self.intended_prms = None
         self.actual_conns = None
         self.actual_prms = None
 
@@ -104,6 +105,18 @@ class Circuit:
     def simulate_actual(self, input_vals):
         v = solve_circuit_complex(input_vals[..., :-1], input_vals[..., -1], self.nodes,
                                   self.actual_conns, self.actual_prms)
+        # Assemble the observed voltages for return
+        output_list = []
+        for obs in self.outputs:
+            i = self.node_index_from_pin(obs)
+            output_list.append(v[..., i].abs())
+            output_list.append(v[..., i].angle())
+        outputs = tc.stack(output_list, -1)
+        return outputs
+
+    def simulate_intended(self, input_vals):
+        v = solve_circuit_complex(input_vals[..., :-1], input_vals[..., -1], self.nodes,
+                                  self.intended_conns, self.intended_prms)
         # Assemble the observed voltages for return
         output_list = []
         for obs in self.outputs:

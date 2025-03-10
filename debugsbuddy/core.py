@@ -1,5 +1,6 @@
 """Entry point for the BOED-based analog circuit debug tool."""
 
+import time
 import itertools
 from scipy.stats import norm
 import torch as tc
@@ -7,6 +8,8 @@ import pyro
 from pyro import poutine
 from pyro.contrib.oed.eig import marginal_eig, nmc_eig
 import matplotlib.pyplot as plt
+import seaborn
+import pandas as pd
 
 __all__ = ['guided_debug']
 
@@ -16,15 +19,18 @@ print(f"Using processor {pu}")
 # Defaults for debugs buddy tuning parameters
 EIG_SAMPLES = 6000
 INF_SAMPLES = 1e6
-BLAME_THRESHOLD = 0.01
+BLAME_THRESHOLD = 0.1
 DISCRETE_VOLTS = 11
 DISCRETE_FREQS = 13
 
-OPEN_ADMITTANCE = 1e-3
-SHRT_ADMITTANCE = 1e3
+OPEN_ADMITTANCE = 1e-2
+SHRT_ADMITTANCE = 1e2
+OPEN_ADMITTANCE_INF = 1e-4
+SHRT_ADMITTANCE_INF = 1e4
 OPEN_FAULT_PROB = 0.1
 SHRT_FAULT_PROB = 0.05
 COMP_PRM_SPREAD = 0.2
+COMP_PRM_TOL = 0.1
 MEAS_ERROR = 0.002
 
 
@@ -38,8 +44,8 @@ def eval_eigs(prob_mdl, tests, obs_labels, circ_prm_labels, eig_samples):
         tests,           # design, or in this case, tensor of possible designs
         obs_labels,      # site label of observations, could be a list
         circ_prm_labels, # site label of 'targets' (latent variables), could also be list
-        N=eig_samples,           # number of samples to draw per step in the expectation
-        M=eig_samples)           # number of gradient steps
+        N=eig_samples,           # number of theta samples to use
+        M=eig_samples)           # number of observation samples
     accepted_eigs = eig.cpu()
     return accepted_eigs.detach()
 
@@ -96,16 +102,14 @@ def analyze_beliefs(init: dict, new: dict, blame_thrshld: float):
     worst_uncertainty = ''
     likely_correct = True
     bad_state = lambda x: 'unconnected' if x > 0.5 else 'shorted'
+    problems = []
 
     for ltnt in new:
         # Latent variables that are beliefs about whether a node connection is short vs. open
         if ltnt[0] == 'e':
             # We take the difference opposite ways for connections that are intended to be short vs. open
             # This way a positive difference always indicates that the connection is now more likely to be correct
-            if init[ltnt] < 0.5:
-                d = init[ltnt] - new[ltnt]
-            else:
-                d = new[ltnt] - init[ltnt]
+            d = init[ltnt] - new[ltnt] if init[ltnt] < 0.5 else new[ltnt] - init[ltnt]
             # The circuit is only anticipated to be correct if all edges have tended towards the correct states
             if d < -blame_thrshld:
                 likely_correct = False
@@ -121,24 +125,13 @@ def analyze_beliefs(init: dict, new: dict, blame_thrshld: float):
         else:
             # For component parameters we determine the difference in both normal distribution parameters
             for prm in new[ltnt]:
-                # Variance should decrease as we gain more information
-                d_stddev = init[ltnt][prm][1] - new[ltnt][prm][1]
-                # Indicate an issue if the correct mean is more than a current deviation outside the current mean
-                sigmas_to_mean = -(abs(new[ltnt][prm][0] - init[ltnt][prm][0]) / new[ltnt][prm][1]) + 1
-                if sigmas_to_mean < 0:
-                    likely_correct = False
-                    # Variance in parameters should decrease from initial, if increased something strange is occurring
-                    if d_stddev < 0:
-                        worst_uncertainty = f"{ltnt}-{prm}"
-                    # Track which parameter is least likely to be the correct value
-                    if sigmas_to_mean < worst_param['stddevs']:
-                        p = 'too low' if new[ltnt][prm][0] < init[ltnt][prm][0] else 'too high'
-                        worst_param = {'ltnt': f"{ltnt}-{prm}", 'stddevs': d_stddev, 'problem': p}
+                tol_diff = init[ltnt][prm][0] * COMP_PRM_TOL
+                mismatch = new[ltnt][prm][0] + tol_diff < init[ltnt][prm][0] or new[ltnt][prm][0] - tol_diff > init[ltnt][prm][0]
+                if mismatch:
+                    problems.append({'ltnt': f"{ltnt}-{prm}", 'expected': init[ltnt][prm][0], 'inferred': new[ltnt][prm][0]})
 
     # Construct the list of potential circuit construction problems to report to the user
-    problems = []
     if not likely_correct:
-        # TODO: Seems like the standard deviations aren't changing much after inference?
         if worst_uncertainty != '':
             print(f"Less certain about the value of {worst_uncertainty} than at the start of debugging, unusual...")
         # Don't want to overload the user by suggesting four possible problems; try to reduce to the most likely problem
@@ -156,7 +149,7 @@ def analyze_beliefs(init: dict, new: dict, blame_thrshld: float):
     return problems
 
 
-def guided_debug(circuit, mode='simulated', **prm_overrides):
+def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, **prm_overrides):
     # Setup of general objects needed for the guided debug process
     print(f"Starting guided debug using Debugs Buddy...")
 
@@ -169,6 +162,8 @@ def guided_debug(circuit, mode='simulated', **prm_overrides):
 
     shrt = tc.tensor(prm_overrides['shrt_admittance'] if 'shrt_admittance' in prm_overrides else SHRT_ADMITTANCE, device=pu)
     open = tc.tensor(prm_overrides['open_admittance'] if 'open_admittance' in prm_overrides else OPEN_ADMITTANCE, device=pu)
+    shrt_inf = tc.tensor(prm_overrides['shrt_admit_inf'] if 'shrt_admit_inf' in prm_overrides else SHRT_ADMITTANCE_INF, device=pu)
+    open_inf = tc.tensor(prm_overrides['open_admit_inf'] if 'open_admit_inf' in prm_overrides else OPEN_ADMITTANCE_INF, device=pu)
     shrt_prob = prm_overrides['shrt_fault_prob'] if 'shrt_fault_prob' in prm_overrides else SHRT_FAULT_PROB
     open_prob = prm_overrides['open_fault_prob'] if 'open_fault_prob' in prm_overrides else OPEN_FAULT_PROB
     prm_spread = prm_overrides['comp_prm_spread'] if 'comp_prm_spread' in prm_overrides else COMP_PRM_SPREAD
@@ -177,8 +172,12 @@ def guided_debug(circuit, mode='simulated', **prm_overrides):
     # Set up the compute device
     tc.backends.cuda.matmul.allow_tf32 = True
     # Define the initial fault model and the graphical nodes that we will be conditioning and observing
+    # TODO: Make a separate BED and conditioning model with different short and open admittance, as instability is fine for conditioning but not BED,
+    #   and more resistive shorts and opens lead to component value errors during conditioning
     curr_mdl = circuit.gen_fault_mdl(shrt_res=shrt, open_res=open, shrt_fault_prob=shrt_prob, open_fault_prob=open_prob,
                                      comp_prm_spread=prm_spread, meas_error=meas_error)
+    curr_inf_mdl = circuit.gen_fault_mdl(shrt_res=shrt_inf, open_res=open_inf, shrt_fault_prob=shrt_prob, open_fault_prob=open_prob,
+                                         comp_prm_spread=prm_spread, meas_error=meas_error)
     obs_lbls = circuit.get_obsrvd_lbls()
     ltnt_lbls = circuit.get_latent_lbls()
     init_beliefs = circuit.curr_beliefs
@@ -194,14 +193,14 @@ def guided_debug(circuit, mode='simulated', **prm_overrides):
     for comp in circuit.comps.values():
         if comp.type in ['c', 'l']:
             circ_is_ac = True
-    # For now we just consider 1Hz (10^0) to 1MHz (10^6) in log steps
-    freqs = tc.logspace(0, 6, freq_steps, dtype=tc.float, device=pu) if circ_is_ac else tc.tensor([0.0])
+    freqs = tc.logspace(-2, 2, freq_steps, dtype=tc.float, device=pu) if circ_is_ac else tc.tensor([0.0])
     # Put the voltages and frequencies together into the complete BOED input matrix
     candidate_tests = tc.tensor(list(itertools.product(*volts.values(), freqs)), dtype=tc.float, device=pu)
 
     # With the circuit and experiments defined, begin recommending measurements to determine implementation faults
     pyro.clear_param_store()
     while True:
+        start = time.time()
         # First we determine what test inputs to apply to the circuit next
         print(f"Determining next best test to conduct...")
         eigs = None
@@ -216,7 +215,7 @@ def guided_debug(circuit, mode='simulated', **prm_overrides):
         best_test = int(tc.argmax(eigs).detach())
         candidate_tests = tc.concat(candidate_tests)
 
-        viz_results = True
+        viz_results = False
         if viz_results:
             plt.figure(figsize=(20, 7))
             # TODO: Make x_vals determination more general
@@ -228,6 +227,15 @@ def guided_debug(circuit, mode='simulated', **prm_overrides):
             plt.xlabel("Possible inputs")
             plt.xticks(rotation=90, fontsize='x-small')
             plt.ylabel("EIG")
+            plt.show()
+
+        alt_viz = True
+        if alt_viz:
+            p, ax = plt.subplots(figsize=(20, 7))
+            #df = pd.DataFrame({'eig': eigs.cpu(), 'v': candidate_tests[:, 0].cpu(), 'f': candidate_tests[:, 1].cpu()})
+            #seaborn.scatterplot(df, x='v', y='f', palette='viridis', hue='eig', hue_norm=(0, 10))
+            ax.contourf(freqs.cpu(), volts['vin1'].cpu(), eigs.cpu().reshape((len(volts['vin1']), len(freqs))))
+            ax.set_xscale('log')
             plt.show()
 
         # Apply the selected test inputs to the circuit and collect measurements
@@ -247,11 +255,12 @@ def guided_debug(circuit, mode='simulated', **prm_overrides):
         for i, obs in enumerate(obs_lbls):
             obs_set[obs] = measured[i]
         print(f"Updating probable faults based on measurement data...")
-        new_beliefs = condition_fault_model(curr_mdl, candidate_tests[best_test], obs_set, ltnt_lbls, inf_samples)
+        new_beliefs = condition_fault_model(curr_inf_mdl, candidate_tests[best_test], obs_set, ltnt_lbls, inf_samples)
 
         # Analyze the new beliefs to try and determine whether there's a fault and what it is likely to be
         problems = analyze_beliefs(init_beliefs, new_beliefs, blame_thrshld)
         # The circuit is likely to be correct if all beliefs became more certain
+        p_list = []
         if len(problems) == 0:
             print("Measurements indicate that the circuit is likely to be correctly assembled!")
         else:
@@ -263,12 +272,21 @@ def guided_debug(circuit, mode='simulated', **prm_overrides):
                     n1 = circuit.nodal_name_from_index(int(n1))
                     n2 = circuit.nodal_name_from_index(int(n2))
                     print(f"   -Looks like nodes {n1} and {n2} might be {p['problem']}")
+                    p_list.append((n1, n2))
                 else:
-                    print(f"   -Looks like component parameter {p['ltnt']} might be {p['problem']}")
+                    print(f"   -Looks like component parameter {p['ltnt']} might be {p['inferred']} instead of {p['expected']}")
+                    p_list.append(p['ltnt'])
 
         # Update the fault model to reflect the new beliefs and run another iteration
         curr_mdl = circuit.gen_fault_mdl(new_beliefs, shrt_res=shrt, open_res=open,
                                          shrt_fault_prob=shrt_prob, open_fault_prob=open_prob,
                                          comp_prm_spread=prm_spread, meas_error=meas_error)
+        curr_inf_mdl = circuit.gen_fault_mdl(new_beliefs, shrt_res=shrt_inf, open_res=open_inf,
+                                             shrt_fault_prob=shrt_prob, open_fault_prob=open_prob,
+                                             comp_prm_spread=prm_spread, meas_error=meas_error)
         print(new_beliefs)
-        input('Press Enter to run another cycle...')
+        print(f'Iter time taken: {time.time() - start}s')
+        if single_iter:
+            return p_list
+        else:
+            input('Press Enter to run another iteration...')

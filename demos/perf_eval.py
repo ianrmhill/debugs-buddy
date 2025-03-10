@@ -21,13 +21,22 @@ def run_demo():
     outputs = [r3.p1, r2.p1]
     three_res_circ = Circuit([r1, r2, r3, v1, v2, gnd], intended_conns, outputs)
 
-    faulty_conns = [(gnd, r1.p1), (v2, r2.p1), (r1.p2, r3.p1), (r2.p2, r3.p1), (r3.p2, gnd)]
+    #faulty_conns = [(v1, r1.p1), (v2, r2.p1), (r1.p2, r3.p1), (r2.p2, r3.p1), (r3.p2, gnd)]
+    faulty_conns = [(v2, r2.p1), (r1.p2, r3.p1), (r2.p2, r3.p1), (r3.p2, gnd)]
     faulty_prms = {'r1': {'r': 1.2}, 'r2': {'r': 2.4}, 'r3': {'r': 1.6}}
     three_res_circ.set_actual_circuit(faulty_conns, faulty_prms)
 
+    key_fault = ('r1.p1', 'gnd1-gnd')
+
     # Run debugs buddy, get the likely faults
-    bugbud.guided_debug(three_res_circ, mode='simulated',
-                        shrt_admittance=1e2, open_admittance=1e-2)
+    faults = bugbud.guided_debug(three_res_circ, mode='simulated', single_iter=True,
+                                 shrt_admittance=1e2, open_admittance=1e-2)
+    # Check that the introduced fault(s) are correctly identified by the debugger
+    print(faults)
+    if key_fault in faults:
+        print('Found the fault!')
+    else:
+        print('Failed to one shot :(')
 
 
 if __name__ == '__main__':
