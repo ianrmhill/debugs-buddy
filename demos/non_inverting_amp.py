@@ -8,9 +8,10 @@ from debugsbuddy.circuits import Circuit
 
 
 def run_demo():
+    # Define the intended circuit design
     r1 = Resistor(2)
     r2 = Resistor(4)
-    op1 = OpAmp(1, 0.2, 1, [0, 2])
+    op1 = OpAmp(1, 0.2, 1, [0, 1])
     v1 = VoltSource(0, 1)
     gnd = Ground()
     intended_conns = [(v1, op1.ip), (r1.p1, op1.im), (r1.p2, gnd), (r2.p1, op1.im), (r2.p2, op1.o), (r1.p1, r2.p1)]
@@ -19,12 +20,14 @@ def run_demo():
 
     # Set the faulty circuit parameters
     faulty_conns = [(v1, op1.ip), (r1.p1, op1.im), (r1.p2, gnd), (r2.p1, op1.im), (r2.p2, op1.o)]
+    faulty_conns.append((v1, r1.p1))
     faulty_prms = {'r1': {'r': 2},
                    'r2': {'r': 4},
                    'op1': {'rin': 1, 'rout': 0.2, 'gain': 1}}
     int_amp_circ.set_actual_circuit(faulty_conns, faulty_prms)
 
-    bugbud.guided_debug(int_amp_circ, mode='simulated', shrt_admittance=1e2, open_admittance=1e-2)
+    bugbud.guided_debug(int_amp_circ, mode='simulated', shrt_admittance=1e2, open_admittance=1e-2,
+                        meas_error=0.05, shrt_fault_prob=0.03, open_fault_prob=0.03)
 
 
 if __name__ == '__main__':

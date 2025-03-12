@@ -123,5 +123,5 @@ class OpAmp(Component):
                 return (100 * prms['gain']) / prms['rout']
             elif p1 == 'im' and p2 == 'o':
                 return -((100 * prms['gain']) / prms['rout'])
-        # If we didn't return yet, that means in invalid set of arguments was provided
+        # If we didn't return yet, that means an invalid set of arguments was provided
         raise Exception('Invalid opamp pin pair relationship requested')

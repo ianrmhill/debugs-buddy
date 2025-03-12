@@ -6,7 +6,7 @@ import pyro
 import pyro.distributions as dist
 
 from .components import *
-from .circuit_solver import solve_circuit_complex
+from .circuit_solver import solve_circuit_complex, solve_circuit
 
 __all__ = ['Circuit']
 
@@ -102,15 +102,21 @@ class Circuit:
             c[i1, i0] = 1
         return c
 
-    def simulate_actual(self, input_vals):
-        v = solve_circuit_complex(input_vals[..., :-1], input_vals[..., -1], self.nodes,
-                                  self.actual_conns, self.actual_prms)
+    def simulate_actual(self, input_vals, complex=True):
+        if complex:
+            v = solve_circuit_complex(input_vals[..., :-1], input_vals[..., -1], self.nodes,
+                                      self.actual_conns, self.actual_prms)
+        else:
+            v = solve_circuit(input_vals, self.nodes, self.actual_conns, self.actual_prms)
         # Assemble the observed voltages for return
         output_list = []
         for obs in self.outputs:
             i = self.node_index_from_pin(obs)
-            output_list.append(v[..., i].abs())
-            output_list.append(v[..., i].angle())
+            if complex:
+                output_list.append(v[..., i].abs())
+                output_list.append(v[..., i].angle())
+            else:
+                output_list.append(v[..., i])
         outputs = tc.stack(output_list, -1)
         return outputs
 
@@ -126,11 +132,14 @@ class Circuit:
         outputs = tc.stack(output_list, -1)
         return outputs
 
-    def get_obsrvd_lbls(self):
+    def get_obsrvd_lbls(self, complex=True):
         obsrvd_list = []
         for obs in self.outputs:
-            obsrvd_list.append(f"{obs.prnt_comp}-{obs.name}-ampli")
-            obsrvd_list.append(f"{obs.prnt_comp}-{obs.name}-phase")
+            if complex:
+                obsrvd_list.append(f"{obs.prnt_comp}-{obs.name}-ampli")
+                obsrvd_list.append(f"{obs.prnt_comp}-{obs.name}-phase")
+            else:
+                obsrvd_list.append(f"{obs.prnt_comp}-{obs.name}")
         return obsrvd_list
 
     def get_latent_lbls(self):
@@ -161,7 +170,7 @@ class Circuit:
 
     def gen_fault_mdl(self, prior_beliefs: dict = None,
                       shrt_res=tc.tensor(1e3, device=pu), open_res=tc.tensor(1e-3, device=pu),
-                      open_fault_prob=0.1, shrt_fault_prob=0.05, comp_prm_spread=0.2, meas_error=0.002):
+                      open_fault_prob=0.1, shrt_fault_prob=0.05, comp_prm_spread=0.2, meas_error=0.002, complex=True):
         if not prior_beliefs:
             prior_beliefs = self.gen_init_priors(open_fault_prob, shrt_fault_prob, comp_prm_spread)
         # Save the current set of beliefs so we can compare them to sets after inference
@@ -190,22 +199,29 @@ class Circuit:
                                 f"{comp.name}-{prm}", dist.Normal(*prior_beliefs[comp.name][prm]))
 
                 # Solve the circuit for the sampled values
-                v_ins = inputs[..., :-1]
-                freqs = inputs[..., -1]
-                node_voltages = solve_circuit_complex(v_ins, freqs, self.nodes, conn_states, comp_prms,
+                if complex:
+                    v_ins = inputs[..., :-1]
+                    freqs = inputs[..., -1]
+                    node_voltages = solve_circuit_complex(v_ins, freqs, self.nodes, conn_states, comp_prms,
                                                       shrt_res, open_res)
+                else:
+                    node_voltages = solve_circuit(inputs, self.nodes, conn_states, comp_prms, shrt_res, open_res)
 
                 # Assemble the observed voltages for return
                 output_list = []
                 for obs in self.outputs:
                     i = self.node_index_from_pin(obs)
-                    # TODO: decide on random variance addition logic
-                    output_list.append(pyro.sample(
-                        f"{obs.prnt_comp}-{obs.name}-ampli",
-                        dist.Normal(node_voltages[..., i].abs(), tc.tensor(meas_error, device=pu))))
-                    output_list.append(pyro.sample(
-                        f"{obs.prnt_comp}-{obs.name}-phase",
-                        dist.Normal(node_voltages[..., i].angle(), tc.tensor(meas_error, device=pu))))
+                    if complex:
+                        output_list.append(pyro.sample(
+                            f"{obs.prnt_comp}-{obs.name}-ampli",
+                            dist.Normal(node_voltages[..., i].abs(), tc.tensor(meas_error, device=pu))))
+                        output_list.append(pyro.sample(
+                            f"{obs.prnt_comp}-{obs.name}-phase",
+                            dist.Normal(node_voltages[..., i].angle(), tc.tensor(meas_error, device=pu))))
+                    else:
+                        output_list.append(pyro.sample(
+                            f"{obs.prnt_comp}-{obs.name}",
+                            dist.Normal(node_voltages[..., i], tc.tensor(meas_error, device=pu))))
                 outputs = tc.stack(output_list, -1)
                 return outputs
 

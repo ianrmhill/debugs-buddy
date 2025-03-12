@@ -104,3 +104,76 @@ def solve_circuit_complex(source_vals, frequency, nodes, edge_states, prms, shrt
                     o['v_fixed'])
 
     return v
+
+
+
+def solve_circuit(source_vals, nodes, edge_states, prms, shrt_res=shrt, open_res=open):
+    # The vector 'b' indicates whether any nodes in the circuit have fixed voltages (e.g. source nodes)
+    # The corresponding row in the matrix 'a' will be all zeros except 1 for the fixed voltage node coefficient
+    batch_dims = source_vals.shape[:-1]
+    row_dims = (batch_dims, len(nodes)) if type(batch_dims) == int else (*batch_dims, len(nodes))
+
+    # Set up the non-linear op amp saturation required data structures
+    sat = {}
+    opamp_list = []
+    for i, node in enumerate(nodes):
+        # Ensure we only iterate over the output of each op amp once, and only those with power rails modelled
+        if node.name == 'o' and 'op' in node.prnt_comp and node.lims is not None and node.prnt_comp not in opamp_list:
+            opamp_list.append(node.prnt_comp)
+            sat[node.prnt_comp] =\
+                {'n': i, 'min': node.lims[0], 'max': node.lims[1],
+                 'is_sat': tc.zeros(batch_dims, device=pu), 'v_fixed': tc.zeros(batch_dims, device=pu)}
+
+    # Set up the linear circuit equations first
+    b = tc.zeros(row_dims, dtype=tc.float, device=pu)
+    a_list = []
+    # Node order is fixed, and the source value order must match that in which the source nodes appear
+    s = 0
+    for i, n1 in enumerate(nodes):
+        a_row = tc.zeros(row_dims, dtype=tc.float, device=pu)
+        if n1.name == 'vin':
+            # Set the input values across all batch dimensions then increment the source counter
+            b[..., i] = source_vals[..., s]
+            s += 1
+            # Set the row coefficients to 0 except for 1 in the position corresponding to the node itself
+            a_row[..., i] = 1
+        elif n1.name == 'gnd':
+            b[..., i] = tc.zeros(batch_dims, device=pu)
+            a_row[..., i] = 1
+        else:
+            # Construct the node KCL equation
+            for j, n2 in enumerate(nodes):
+                if i != j:
+                    a_row[..., j] -= tc.where(edge_states[..., i, j] == 1, shrt_res, open_res)
+                    a_row[..., i] += tc.where(edge_states[..., i, j] == 1, shrt_res, open_res)
+                    if n1.prnt_comp == n2.prnt_comp:
+                        a_row[..., i] += n1.calc_coeff(n1.name, n1.name, n2.name, prms[n1.prnt_comp], None)
+                        a_row[..., j] -= n1.calc_coeff(n1.name, n2.name, n1.name, prms[n1.prnt_comp], None)
+        a_list.append(a_row)
+    a = tc.stack(a_list, -2)
+
+    # Solve the system of equations, check for op amp saturation in linear solution, then fix voltages if needed
+    # We solve again and keep fixing any new supply violations until all circuits within the batch are within limits
+    more_sat = True
+    while more_sat:
+        for i, n in enumerate(nodes):
+            if n.name == 'o' and n.prnt_comp in sat.keys() and tc.count_nonzero(sat[n.prnt_comp]['is_sat'] > 0):
+                b[..., i] = tc.where(sat[n.prnt_comp]['is_sat'] == 1, sat[n.prnt_comp]['v_fixed'], zero)
+                a[..., i, :] = tc.where(sat[n.prnt_comp]['is_sat'].unsqueeze(-1) == 1, zero, a[..., i, :])
+                a[..., i, i] = tc.where(sat[n.prnt_comp]['is_sat'] == 1, tc.tensor(1.0, device=pu), a[..., i, i])
+
+        # Create the matrix a by stacking all the rows of coefficients from the KCL equations then solve
+        v = tc.linalg.solve(a, b)
+
+        # Check for op amp saturation in the computed values
+        more_sat = False
+        for o in sat.values():
+            new_sat = tc.where(v[..., o['n']] < o['min'], 1.0, o['is_sat'])
+            new_sat = tc.where(v[..., o['n']] > o['max'], 1.0, new_sat)
+            # If any of the batch circuits now have saturation we must fix voltages for that circuit and recalculate
+            if not tc.allclose(o['is_sat'], new_sat):
+                more_sat = True
+                o['is_sat'] = new_sat
+                o['v_fixed'] = tc.where(v[..., o['n']] < o['min'], o['min'], o['v_fixed'])
+                o['v_fixed'] = tc.where(v[..., o['n']] > o['max'], o['max'], o['v_fixed'])
+    return v

@@ -171,14 +171,18 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
 
     # Set up the compute device
     tc.backends.cuda.matmul.allow_tf32 = True
+    # Determine if circuit requires AC analysis
+    circ_is_ac = False
+    for comp in circuit.comps.values():
+        if comp.type in ['c', 'l']:
+            circ_is_ac = True
+
     # Define the initial fault model and the graphical nodes that we will be conditioning and observing
-    # TODO: Make a separate BED and conditioning model with different short and open admittance, as instability is fine for conditioning but not BED,
-    #   and more resistive shorts and opens lead to component value errors during conditioning
     curr_mdl = circuit.gen_fault_mdl(shrt_res=shrt, open_res=open, shrt_fault_prob=shrt_prob, open_fault_prob=open_prob,
-                                     comp_prm_spread=prm_spread, meas_error=meas_error)
+                                     comp_prm_spread=prm_spread, meas_error=meas_error, complex=circ_is_ac)
     curr_inf_mdl = circuit.gen_fault_mdl(shrt_res=shrt_inf, open_res=open_inf, shrt_fault_prob=shrt_prob, open_fault_prob=open_prob,
-                                         comp_prm_spread=prm_spread, meas_error=meas_error)
-    obs_lbls = circuit.get_obsrvd_lbls()
+                                         comp_prm_spread=prm_spread, meas_error=meas_error, complex=circ_is_ac)
+    obs_lbls = circuit.get_obsrvd_lbls(circ_is_ac)
     ltnt_lbls = circuit.get_latent_lbls()
     init_beliefs = circuit.curr_beliefs
 
@@ -188,14 +192,14 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
         # For each input voltage, we consider possible amplitudes in increments of 100mV within the voltage source range
         if comp.type == 'vin':
             volts[comp.name] = tc.linspace(comp.range[0], comp.range[1], volt_steps, dtype=tc.float, device=pu)
-    # Construct frequencies
-    circ_is_ac = False
-    for comp in circuit.comps.values():
-        if comp.type in ['c', 'l']:
-            circ_is_ac = True
-    freqs = tc.logspace(-2, 2, freq_steps, dtype=tc.float, device=pu) if circ_is_ac else tc.tensor([0.0])
-    # Put the voltages and frequencies together into the complete BOED input matrix
-    candidate_tests = tc.tensor(list(itertools.product(*volts.values(), freqs)), dtype=tc.float, device=pu)
+
+    if circ_is_ac:
+        # Construct frequencies
+        freqs = tc.logspace(-2, 2, freq_steps, dtype=tc.float, device=pu) if circ_is_ac else tc.tensor([0.0])
+        # Put the voltages and frequencies together into the complete BOED input matrix
+        candidate_tests = tc.tensor(list(itertools.product(*volts.values(), freqs)), dtype=tc.float, device=pu)
+    else:
+        candidate_tests = tc.tensor(list(itertools.product(*volts.values())), dtype=tc.float, device=pu)
 
     # With the circuit and experiments defined, begin recommending measurements to determine implementation faults
     pyro.clear_param_store()
@@ -215,7 +219,7 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
         best_test = int(tc.argmax(eigs).detach())
         candidate_tests = tc.concat(candidate_tests)
 
-        viz_results = False
+        viz_results = True
         if viz_results:
             plt.figure(figsize=(20, 7))
             # TODO: Make x_vals determination more general
@@ -229,7 +233,7 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
             plt.ylabel("EIG")
             plt.show()
 
-        alt_viz = True
+        alt_viz = False
         if alt_viz:
             p, ax = plt.subplots(figsize=(20, 7))
             #df = pd.DataFrame({'eig': eigs.cpu(), 'v': candidate_tests[:, 0].cpu(), 'f': candidate_tests[:, 1].cpu()})
@@ -241,7 +245,7 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
         # Apply the selected test inputs to the circuit and collect measurements
         if mode == 'simulated':
             print(f"Next best test: {candidate_tests[best_test]}.")
-            measured = circuit.simulate_actual(candidate_tests[best_test]).to(pu)
+            measured = circuit.simulate_actual(candidate_tests[best_test], circ_is_ac).to(pu)
             print(f"Measured from test: {measured}.")
         else:
             # If in real-world guided debug mode the user must collect the measurements manually
@@ -280,10 +284,10 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
         # Update the fault model to reflect the new beliefs and run another iteration
         curr_mdl = circuit.gen_fault_mdl(new_beliefs, shrt_res=shrt, open_res=open,
                                          shrt_fault_prob=shrt_prob, open_fault_prob=open_prob,
-                                         comp_prm_spread=prm_spread, meas_error=meas_error)
+                                         comp_prm_spread=prm_spread, meas_error=meas_error, complex=circ_is_ac)
         curr_inf_mdl = circuit.gen_fault_mdl(new_beliefs, shrt_res=shrt_inf, open_res=open_inf,
                                              shrt_fault_prob=shrt_prob, open_fault_prob=open_prob,
-                                             comp_prm_spread=prm_spread, meas_error=meas_error)
+                                             comp_prm_spread=prm_spread, meas_error=meas_error, complex=circ_is_ac)
         print(new_beliefs)
         print(f'Iter time taken: {time.time() - start}s')
         if single_iter:
