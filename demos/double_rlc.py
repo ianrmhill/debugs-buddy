@@ -16,15 +16,14 @@ def run_demo():
     c2 = Capacitor(0.1)
     v1 = VoltSource(0, 1)
     gnd = Ground()
-    intended_conns = [(v1, l1.p1), (v1, l2.p1), (l1.p1, l2.p1), (l1.p2, c1.p1), (l2.p2, c2.p1), (c1.p2, r1.p1), (c2.p2, r1.p1), (c1.p2, c2.p2), (r1.p2, gnd)]
-    #intended_conns = [(v1, l1.p1), (v1, l2.p1), (l1.p2, c1.p1), (l2.p2, c2.p1), (c1.p2, r1.p1), (c2.p2, r1.p1), (r1.p2, gnd)]
+    intended_conns = [(v1, l1.p1), (v1, l2.p1), (l1.p2, c1.p1), (l2.p2, c2.p1), (c1.p2, r1.p1), (c2.p2, r1.p1), (r1.p2, gnd)]
     outputs = [r1.p1, l1.p2, l2.p2]
     two_pole_rlc = Circuit([r1, l1, c1, l2, c2, v1, gnd], intended_conns, outputs)
     two_pole_rlc.intended_prms ={'r1': {'r': 1}, 'l1': {'l': 0.5}, 'c1': {'c': 0.3}, 'l2': {'l': 0.2}, 'c2': {'c': 0.1}}
 
     # Set the faulty circuit parameters
     faulty_conns = [(v1, l1.p1), (v1, l2.p1), (l1.p1, l2.p1), (l1.p2, c1.p1), (l2.p2, c2.p1), (r1.p1, c1.p2), (r1.p1, c2.p2), (c1.p2, c2.p2), (r1.p2, gnd)]
-    faulty_prms = {'r1': {'r': 1}, 'l1': {'l': 0.5}, 'c1': {'c': 0.3}, 'l2': {'l': 0.2}, 'c2': {'c': 0.17}}
+    faulty_prms = {'r1': {'r': 1}, 'l1': {'l': 0.5}, 'c1': {'c': 0.3}, 'l2': {'l': 0.2}, 'c2': {'c': 0.1}}
     two_pole_rlc.set_actual_circuit(faulty_conns, faulty_prms)
 
     bugbud.guided_debug(two_pole_rlc, mode='simulated', meas_error=0.05, #shrt_admittance=1e4, open_admittance=1e-4, meas_error=0.05,

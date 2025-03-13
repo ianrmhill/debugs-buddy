@@ -36,6 +36,7 @@ class Circuit:
         self.intended_prms = None
         self.actual_conns = None
         self.actual_prms = None
+        self.ignore_faults = self.find_fake_faults(intended_connections)
 
     def set_actual_circuit(self, actual_connections, actual_parameters):
         self.actual_conns = self.build_conn_matrix(actual_connections)
@@ -101,6 +102,38 @@ class Circuit:
             c[i0, i1] = 1
             c[i1, i0] = 1
         return c
+
+    def find_fake_faults(self, intended_conns):
+        fakes = []
+        srcs = []
+        for i, node in enumerate(self.nodes):
+            if 'vin' in node.prnt_comp or 'gnd' in node.prnt_comp:
+                srcs.append(i)
+        srcs.sort()
+        # Mark short faults between sources which can't happen in practice without equipment failing or fires
+        for i, src in enumerate(srcs):
+            for j in range(i+1, len(srcs)):
+                fakes.append(f"e-{srcs[i]}-{srcs[j]}")
+
+        conn_counts = {node: [] for node in self.nodes}
+        for conn in intended_conns:
+            n1 = self.node_index_from_pin(conn[0] if type(conn[0]) == Pin else conn[0].p1)
+            n2 = self.node_index_from_pin(conn[1] if type(conn[1]) == Pin else conn[1].p1)
+            conn_counts[self.nodes[n1]].append(n2)
+            conn_counts[self.nodes[n2]].append(n1)
+        # Mark triangle connections where 3 or more nodes are connected, leading to intended short faults
+        for node in conn_counts:
+            conn_counts[node].sort()
+            if len(conn_counts[node]) == 2:
+                fakes.append(f"e-{conn_counts[node][0]}-{conn_counts[node][1]}")
+            elif len(conn_counts[node]) == 3:
+                fakes.append(f"e-{conn_counts[node][0]}-{conn_counts[node][1]}")
+                fakes.append(f"e-{conn_counts[node][0]}-{conn_counts[node][2]}")
+                fakes.append(f"e-{conn_counts[node][1]}-{conn_counts[node][2]}")
+            elif len(conn_counts[node]) > 3:
+                raise NotImplementedError('Not yet supporting circuit nodes with five or more intended connections, sorry!')
+
+        return fakes
 
     def simulate_actual(self, input_vals, complex=True):
         if complex:
@@ -195,6 +228,11 @@ class Circuit:
                     if 'prms' in dir(comp):
                         comp_prms[comp.name] = {}
                         for prm in comp.prms:
+                            #deviation = pyro.sample(f"{comp.name}-{prm}-n", dist.Normal(*prior_beliefs[comp.name][prm]['n']))
+                            #wide = pyro.sample(f"{comp.name}-{prm}-u", dist.Uniform(*prior_beliefs[comp.name][prm]['u']))
+                            #slct = pyro.sample(f"{comp.name}-{prm}-s", dist.Bernoulli(0.7), infer={'enumerate': 'parallel'})
+                            #comp_prms[comp.name][prm] = pyro.sample(
+                            #    f"{comp.name}-{prm}", dist.MaskedMixture(slct == 0, deviation, wide))
                             comp_prms[comp.name][prm] = pyro.sample(
                                 f"{comp.name}-{prm}", dist.Normal(*prior_beliefs[comp.name][prm]))
 

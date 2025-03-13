@@ -96,15 +96,37 @@ def condition_fault_model(fault_mdl, inputs, measured, latent_lbls, inf_samples)
     return new_blfs
 
 
-def analyze_beliefs(init: dict, new: dict, blame_thrshld: float):
+def analyze_beliefs(init: dict, new: dict, blame_thrshld: float, ignores: list[str]):
     worst_edges = [{'ltnt': 'none', 'diff': 0}, {'ltnt': 'none', 'diff': 0}, {'ltnt': 'none', 'diff': 0}]
-    worst_param = {'ltnt': 'none', 'stddevs': 0}
     worst_uncertainty = ''
     likely_correct = True
     bad_state = lambda x: 'unconnected' if x > 0.5 else 'shorted'
     problems = []
+    chck_ltnts = list(init.keys())
+    for ig in ignores:
+        chck_ltnts.remove(ig)
 
-    for ltnt in new:
+    # First check if the probability of all faults is down noticeably from original, indicating a correct circuit
+    correct = True
+    for ltnt in chck_ltnts:
+        if ltnt[0] == 'e':
+            if init[ltnt] < 0.5 and new[ltnt] > 0.75 * init[ltnt]:
+                correct = False
+                break
+            elif init[ltnt] > 0.5 and new[ltnt] < init[ltnt] + (0.25 * (1 - init[ltnt])):
+                correct = False
+                break
+        else:
+            for prm in new[ltnt]:
+                tol_diff = init[ltnt][prm][0] * COMP_PRM_TOL
+                if new[ltnt][prm][0] + tol_diff < init[ltnt][prm][0] or new[ltnt][prm][0] - tol_diff > init[ltnt][prm][0]:
+                    correct = False
+                    break
+    if correct:
+        return False
+
+    # If not correct, check if any faults are probable enough to warrant reporting
+    for ltnt in chck_ltnts:
         # Latent variables that are beliefs about whether a node connection is short vs. open
         if ltnt[0] == 'e':
             # We take the difference opposite ways for connections that are intended to be short vs. open
@@ -126,8 +148,7 @@ def analyze_beliefs(init: dict, new: dict, blame_thrshld: float):
             # For component parameters we determine the difference in both normal distribution parameters
             for prm in new[ltnt]:
                 tol_diff = init[ltnt][prm][0] * COMP_PRM_TOL
-                mismatch = new[ltnt][prm][0] + tol_diff < init[ltnt][prm][0] or new[ltnt][prm][0] - tol_diff > init[ltnt][prm][0]
-                if mismatch:
+                if (new[ltnt][prm][0] + tol_diff < init[ltnt][prm][0]) or (new[ltnt][prm][0] - tol_diff > init[ltnt][prm][0]):
                     problems.append({'ltnt': f"{ltnt}-{prm}", 'expected': init[ltnt][prm][0], 'inferred': new[ltnt][prm][0]})
 
     # Construct the list of potential circuit construction problems to report to the user
@@ -143,9 +164,6 @@ def analyze_beliefs(init: dict, new: dict, blame_thrshld: float):
                     problems.append(worst_edges[2])
                 problems.append(worst_edges[1])
             problems.append(worst_edges[0])
-        # Add the worst parameter if it exists since there's no way to effectively compare the 'badness' to the edges
-        if worst_param['stddevs'] < 0:
-            problems.append(worst_param)
     return problems
 
 
@@ -219,10 +237,9 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
         best_test = int(tc.argmax(eigs).detach())
         candidate_tests = tc.concat(candidate_tests)
 
-        viz_results = True
+        viz_results = False
         if viz_results:
             plt.figure(figsize=(20, 7))
-            # TODO: Make x_vals determination more general
             if circ_is_ac:
                 x_vals = [f"{round(float(test[0]), 1)}, {int(test[1])}" for test in candidate_tests]
             else:
@@ -236,10 +253,14 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
         alt_viz = False
         if alt_viz:
             p, ax = plt.subplots(figsize=(20, 7))
-            #df = pd.DataFrame({'eig': eigs.cpu(), 'v': candidate_tests[:, 0].cpu(), 'f': candidate_tests[:, 1].cpu()})
-            #seaborn.scatterplot(df, x='v', y='f', palette='viridis', hue='eig', hue_norm=(0, 10))
-            ax.contourf(freqs.cpu(), volts['vin1'].cpu(), eigs.cpu().reshape((len(volts['vin1']), len(freqs))))
-            ax.set_xscale('log')
+            study = 2
+            if study == 1:
+                #df = pd.DataFrame({'eig': eigs.cpu(), 'v': candidate_tests[:, 0].cpu(), 'f': candidate_tests[:, 1].cpu()})
+                #seaborn.scatterplot(df, x='v', y='f', palette='viridis', hue='eig', hue_norm=(0, 10))
+                ax.contourf(freqs.cpu(), volts['vin1'].cpu(), eigs.cpu().reshape((len(volts['vin1']), len(freqs))))
+                ax.set_xscale('log')
+            if study == 2:
+                ax.contourf(volts['vin1'].cpu(), volts['vin2'].cpu(), eigs.cpu().reshape((len(volts['vin1']), len(volts['vin2']))))
             plt.show()
 
         # Apply the selected test inputs to the circuit and collect measurements
@@ -262,11 +283,13 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
         new_beliefs = condition_fault_model(curr_inf_mdl, candidate_tests[best_test], obs_set, ltnt_lbls, inf_samples)
 
         # Analyze the new beliefs to try and determine whether there's a fault and what it is likely to be
-        problems = analyze_beliefs(init_beliefs, new_beliefs, blame_thrshld)
+        problems = analyze_beliefs(init_beliefs, new_beliefs, blame_thrshld, circuit.ignore_faults)
         # The circuit is likely to be correct if all beliefs became more certain
         p_list = []
-        if len(problems) == 0:
+        if problems == False:
             print("Measurements indicate that the circuit is likely to be correctly assembled!")
+        elif len(problems) == 0:
+            print("More tests needed to provide confident insight!")
         else:
             print("Problems likely exist, try checking the following:")
             for p in problems:

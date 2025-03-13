@@ -62,6 +62,7 @@ def solve_circuit_complex(source_vals, frequency, nodes, edge_states, prms, shrt
             a_row[..., i] = 1
         else:
             # Construct the node KCL equation
+            # FIXME: Made repairs to saturation logic in non-complex solver, port to complex solver as well if possible
             for j, n2 in enumerate(nodes):
                 if i != j:
                     a_row[..., j] -= tc.where(edge_states[..., i, j] == 1, shrt_res, open_res)

@@ -48,7 +48,7 @@ def make_mdl(beliefs):
             n3 = get_fault_val(n3_f, design[..., 2])
             n4 = get_fault_val(n4_f, tc.logical_or(n1, n2, out=tc.empty(n1.shape, dtype=tc.float)))
             n5 = get_fault_val(n5_f, tc.logical_and(n4, n3, out=tc.empty(n4.shape, dtype=tc.float)))
-            return pyro.sample('O', dist.Normal(n5, 0.001))
+            return pyro.sample('O', dist.Normal(n5, 0.1))
     return simple_dig_faults
 
 
@@ -74,7 +74,7 @@ def eval_test_eigs(mdl, designs, viz_results: bool = False):
 
 def amortized_dig_debug():
     # First define the "implemented" circuit
-    test_circuit = CUT(1, None, None, None, None)
+    test_circuit = CUT(None, None, None, None, None)
     # Define the test design space
     candidate_designs = tc.tensor([[0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1],
                                    [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1]], dtype=tc.float)
@@ -92,7 +92,7 @@ def amortized_dig_debug():
         curr_mdl = make_mdl(beliefs)
 
         # First determine best test pattern to apply
-        best = int(tc.argmax(eval_test_eigs(curr_mdl, candidate_designs, False)).float().detach())
+        best = int(tc.argmax(eval_test_eigs(curr_mdl, candidate_designs, True)).float().detach())
 
         # Apply the test pattern to the actual circuit
         print(f"Applying test pattern {candidate_designs[best, :]}")
