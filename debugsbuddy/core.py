@@ -8,7 +8,8 @@ import pyro
 from pyro import poutine
 from pyro.contrib.oed.eig import marginal_eig, nmc_eig
 import matplotlib.pyplot as plt
-import seaborn
+import matplotlib.patches as mpatches
+import seaborn as sb
 import pandas as pd
 
 __all__ = ['guided_debug']
@@ -213,7 +214,7 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
 
     if circ_is_ac:
         # Construct frequencies
-        freqs = tc.logspace(-2, 2, freq_steps, dtype=tc.float, device=pu) if circ_is_ac else tc.tensor([0.0])
+        freqs = tc.logspace(-1, 2, freq_steps, dtype=tc.float, device=pu) if circ_is_ac else tc.tensor([0.0])
         # Put the voltages and frequencies together into the complete BOED input matrix
         candidate_tests = tc.tensor(list(itertools.product(*volts.values(), freqs)), dtype=tc.float, device=pu)
     else:
@@ -250,17 +251,44 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
             plt.ylabel("EIG")
             plt.show()
 
-        alt_viz = False
+        alt_viz = True
         if alt_viz:
-            p, ax = plt.subplots(figsize=(20, 7))
+            sb.set_theme(style='ticks', font='Times New Roman')
+            sb.set_context('talk')
+            p, ax = plt.subplots(figsize=(14, 7))
             study = 2
             if study == 1:
                 #df = pd.DataFrame({'eig': eigs.cpu(), 'v': candidate_tests[:, 0].cpu(), 'f': candidate_tests[:, 1].cpu()})
                 #seaborn.scatterplot(df, x='v', y='f', palette='viridis', hue='eig', hue_norm=(0, 10))
-                ax.contourf(freqs.cpu(), volts['vin1'].cpu(), eigs.cpu().reshape((len(volts['vin1']), len(freqs))))
+                eig = ax.contourf(freqs.cpu(), volts['vin1'].cpu(), eigs.cpu().reshape((len(volts['vin1']), len(freqs))),
+                            levels=20, cmap='inferno')
+                v = tc.linspace(0, 1, 11, dtype=tc.float).repeat(13)
+                f = tc.logspace(-1, 2, 13, dtype=tc.float).repeat_interleave(11)
+                ax.plot(f, v, color='black', linestyle='', marker='.', label='Discrete test designs')
+                ax.axvline(2.51, color='black', linestyle='--')
+                ax.text(2.62, 0.5, 'f1', rotation=90, fontsize=16)
+                ax.axvline(7.194, color='black', linestyle='--')
+                ax.text(7.4, 0.5, 'f2', rotation=90, fontsize=16)
                 ax.set_xscale('log')
+                ax.set_xlabel('V1 - Frequency (rad/s)')
+                ax.set_ylabel('V1 - Voltage (V)')
+                # Set up legend
+                cbar = p.colorbar(eig)
+                cbar.ax.set_ylabel('EIG (nats)')
+                ax.legend(loc='lower right', fontsize=14)
             if study == 2:
-                ax.contourf(volts['vin1'].cpu(), volts['vin2'].cpu(), eigs.cpu().reshape((len(volts['vin1']), len(volts['vin2']))))
+                eig = ax.contourf(volts['vin1'].cpu(), volts['vin2'].cpu(), eigs.cpu().reshape((len(volts['vin1']), len(volts['vin2']))),
+                                  levels=30, cmap='inferno')
+                v2 = tc.linspace(0, 1, 11, dtype=tc.float).repeat(11)
+                v1 = tc.linspace(0, 1, 11, dtype=tc.float).repeat_interleave(11)
+                #vlin = tc.where(tc.lt(tc.tensor(0), v2 - v1) & tc.gt(tc.tensor(1), v2 - v1), v2 - v1, -1)
+                ax.plot(v1, v2, color='black', linestyle='', marker='.', label='Discrete test designs')
+                ax.set_xlabel('V1 (V)')
+                ax.set_ylabel('V2 (V)')
+                # Set up legend
+                cbar = p.colorbar(eig)
+                cbar.ax.set_ylabel('EIG (nats)')
+                ax.legend(loc='lower right', fontsize=14)
             plt.show()
 
         # Apply the selected test inputs to the circuit and collect measurements

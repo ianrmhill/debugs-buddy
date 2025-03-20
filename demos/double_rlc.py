@@ -8,7 +8,7 @@ from debugsbuddy.circuits import Circuit
 
 
 def run_demo():
-    # Define the intended circuit
+    # Define the intended circuit, resonates at 0.4Hz / 2.51rad/s and 1.145Hz / 7.194rad/s
     r1 = Resistor(1)
     l1 = Inductor(0.5)
     c1 = Capacitor(0.3)
@@ -27,7 +27,7 @@ def run_demo():
     two_pole_rlc.set_actual_circuit(faulty_conns, faulty_prms)
 
     bugbud.guided_debug(two_pole_rlc, mode='simulated', meas_error=0.05, #shrt_admittance=1e4, open_admittance=1e-4, meas_error=0.05,
-                        shrt_fault_prob=0.01, open_fault_prob=0.01)
+                        shrt_fault_prob=0.01, open_fault_prob=0.01, discrete_volt_steps=21, discrete_freq_steps=39)
 
 
 if __name__ == '__main__':

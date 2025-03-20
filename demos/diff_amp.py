@@ -32,7 +32,7 @@ def run_demo():
     diff_amp_circ.set_actual_circuit(actual_conns, actual_prms)
 
     bugbud.guided_debug(diff_amp_circ, 'simulated', shrt_fault_prob=0.02, open_fault_prob=0.02, meas_error=0.04,
-                        open_admit_inf=1e-4, shrt_admit_inf=1e4)
+                        open_admit_inf=1e-4, shrt_admit_inf=1e4, discrete_volt_steps=21)
 
 
 if __name__ == '__main__':
