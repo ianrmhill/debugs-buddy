@@ -131,7 +131,8 @@ class Circuit:
                 fakes.append(f"e-{conn_counts[node][0]}-{conn_counts[node][2]}")
                 fakes.append(f"e-{conn_counts[node][1]}-{conn_counts[node][2]}")
             elif len(conn_counts[node]) > 3:
-                raise NotImplementedError('Not yet supporting circuit nodes with five or more intended connections, sorry!')
+                pass
+                #raise NotImplementedError('Not yet supporting circuit nodes with five or more intended connections, sorry!')
 
         return fakes
 

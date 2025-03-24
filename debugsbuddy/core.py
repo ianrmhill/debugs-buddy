@@ -251,7 +251,7 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
             plt.ylabel("EIG")
             plt.show()
 
-        alt_viz = True
+        alt_viz = False
         if alt_viz:
             sb.set_theme(style='ticks', font='Times New Roman')
             sb.set_context('talk')
@@ -340,7 +340,7 @@ def guided_debug(circuit, mode='simulated', single_iter=False, viz_eigs=False, *
                                              shrt_fault_prob=shrt_prob, open_fault_prob=open_prob,
                                              comp_prm_spread=prm_spread, meas_error=meas_error, complex=circ_is_ac)
         print(new_beliefs)
-        print(f'Iter time taken: {time.time() - start}s')
+        print(f'Iteration time taken: {time.time() - start}s')
         if single_iter:
             return p_list
         else:
